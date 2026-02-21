@@ -194,74 +194,77 @@ w3a_data = patch_w3a_fix_abilities(orig_w3a, ['A0A5', 'A052'])
 # ============================================================
 rl_aord_map = {
     # Saber H000
-    "A01J": "thunderclap",       # E Excalibur (point, base=AUcs)
-    "A02B": "divineshield",      # R Avalon (immediate, base=ANbr)
-    "A0A5": "roar",              # D SaberInstinct (immediate, base=Absk)
+    "A087": "unavatar",          # Q InvisibleAir (→ANcl)
+    "A01H": "unavengerform",     # W Caliburn (→ANcl)
+    "A01J": "thunderclap",       # E Excalibur (AUcs, aord is backup)
+    "A02B": "divineshield",      # R Avalon (→ANcl)
+    "A0A5": "roar",              # D SaberInstinct (→ANcl)
     # Archer H001
-    "A01B": "holybolt",          # W BrokenPhantasm (target)
-    "A014": "thunderbolt",       # E RhoAias (target)
-    "A03C": "waterelemental",    # R UBW (immediate)
+    "A019": "transmute",         # Q Kanshou&Bakuya (→ANcl)
+    "A01B": "windwalk",          # W BrokenPhantasm (→ANcl)
+    "A014": "blight",            # E RhoAias (→ANcl)
+    "A03C": "waterelemental",    # R UBW (→ANcl)
     # Lancer H002 (rune sub-abilities + main)
-    "A035": "chainlightning",    # rune Ansuz
-    "A02T": "shockwave",         # rune Ehwaz
-    "A03H": "mirrorimage",       # rune Berkanan
-    "A05A": "stomp",             # rune Dagaz
-    "A05B": "earthquake",        # rune Eihwaz
-    "A052": "blizzard",          # W SwiftStrikes
-    "A01K": "entangle",          # E GaeBolg (target)
-    "A028": "forceofnature",     # R FlyingSpear (point)
+    "A035": "carrionscarabs",    # Q Rune-Ansuz (→ANcl)
+    "A02T": "shockwave",         # D Rune-Ehwaz (→ANcl)
+    "A03H": "mirrorimage",       # F Rune-Berkanan (→ANcl)
+    "A05A": "stomp",             # rune Dagaz (sub-ability)
+    "A05B": "earthquake",        # rune Eihwaz (sub-ability)
+    "A052": "blizzard",          # W SwiftStrikes (→ANcl)
+    "A01K": "web",               # E GaeBolg (→ANcl)
+    "A028": "forceofnature",     # R FlyingSpear (→ANcl)
     # Rider H003
-    "A01Q": "cyclone",           # Q CatenaSword
-    "A01R": "faeriefire",        # W BreakerGorgon (target)
-    "A01F": "metamorphosis",     # E BloodFort
-    "A01E": "inferno",           # R Bellerophon (AUin inherent, point)
+    "A01Q": "cyclone",           # Q CatenaSword (→ANcl)
+    "A01R": "faeriefire",        # W BreakerGorgon (AUcs, aord is backup)
+    "A01F": "metamorphosis",     # E BloodFort (→ANcl)
+    "A01E": "inferno",           # R Bellerophon (→ANcl)
     # Caster/Medea H004
-    "A049": "starfall",          # Q TerritoryCreation (point)
-    "A08D": "aegis",             # W Aegis
+    "A049": "starfall",          # Q TerritoryCreation (→ANcl)
+    "A08D": "aegis",             # W Aegis (ANcl, Ncl6 patched)
     # A08A already has aord="unbearform"
-    "A06L": "carrionswarm",      # R HecaticGraea (point)
+    "A06L": "carrionswarm",      # R HecaticGraea (→ANcl)
     # FakeAssassin H005
-    "A01L": "deathcoil",         # Q Gatekeeper
-    "A05D": "darkportal",        # W Knowledge
-    "A01O": "fingerofdeath",     # E Windblade
-    "A01P": "firebolt",          # R TsubameGaeshi (target)
+    "A01L": "deathcoil",         # Q Gatekeeper (→ANcl)
+    "A05D": "darkportal",        # W Knowledge (→ANcl)
+    "A01O": "fingerofdeath",     # E Windblade (→ANcl)
+    "A01P": "firebolt",          # R TsubameGaeshi (→ANcl)
     # Berserker H006
-    "A04J": "frostarmor",        # Q TrueStrike (point)
-    "A01D": "frostnova",         # W MadEnhancement
-    "A00Z": "sleep",             # E Bravery
-    "A015": "darkconversion",    # R NineLives (point)
+    "A04J": "frostarmor",        # Q TrueStrike (AUcs, aord is backup)
+    "A01D": "frostnova",         # W MadEnhancement (→ANcl)
+    "A00Z": "sleep",             # E Bravery (→ANcl)
+    "A015": "darkconversion",    # R NineLives (→ANcl)
     # SaberAlter H007
-    "A00B": "cripple",           # Q Tyrant
-    "A07S": "curse",             # W Vortigern
-    "A024": "possession",        # E PranaBurst
-    "A023": "animatedead",       # R ExcaliburMorgan (point)
+    "A00B": "cripple",           # Q Tyrant (→ANcl)
+    "A07S": "recharge",          # W Vortigern (→ANcl)
+    "A024": "possession",        # E PranaBurst (→ANcl)
+    "A023": "animatedead",       # R ExcaliburMorgan (AUcs, aord is backup)
     # TrueAssassin H008
-    "A09Y": "inferno",           # Q Steal (target)
-    "A018": "deathanddecay",     # W SelfReconstruction
-    "A012": "ambush",            # E Ambush (explicit, matches base)
+    "A09Y": "inferno",           # Q Steal (→ANcl)
+    "A018": "deathanddecay",     # W SelfReconstruction (→ANcl)
+    "A012": "ambush",            # E Ambush (AOwk, aord matches base)
     # A02A already has aord="unavengerform"
     # Gilgamesh H009
-    "A01Y": "rainoffire",        # Q Marduk (target)
-    "A01X": "creepthunderbolt",  # W Enkidu (target)
-    "A01Z": "cloudoffog",        # E GateOfBabylon (point)
-    "A02E": "controlmagic",      # R EnumaElish
+    "A01Y": "unavengerform",     # Q Marduk (→ANcl)
+    "A01X": "creepthunderbolt",  # W Enkidu (→ANcl)
+    "A01Z": "cloudoffog",        # E GateOfBabylon (→ANcl)
+    "A02E": "controlmagic",      # R EnumaElish (AUcs, aord is backup)
     # Avenger H028 (CAST IDs, not learn IDs!)
-    "A06J": "spellsteal",        # Q KillingIntent
-    "A05V": "banish",            # W TawrichZarich (target)
-    "A05X": "drain",             # E Shade
-    "A02P": "flamestrike",       # R VergAvesta
+    "A06J": "spellsteal",        # Q KillingIntent (→ANcl)
+    "A05V": "polymorph",         # W TawrichZarich (→ANcl)
+    "A05X": "drain",             # E Shade (→ANcl)
+    "A02P": "absorb",            # R VergAvesta (→ANcl)
     # Lancelot H03M
-    "A02Z": "clusterrockets",    # Q SubmachineGun (point)
-    "A08F": "acidbomb",          # W DoubleEdgedSword
-    "A09B": "knightnotdie",      # E KnightNotDie
-    "A08S": "healingspray",      # R Arondight
+    "A02Z": "charm",             # Q SubmachineGun (→ANcl)
+    "A08F": "acidbomb",          # W DoubleEdgedSword (→ANcl)
+    "A09B": "knightnotdie",      # E KnightNotDie (ANcl, Ncl6 patched)
+    "A08S": "healingspray",      # R Arondight (→ANcl)
     # Diarmuid H04D (CAST IDs for E/R!)
-    "A0AG": "transmute",         # Q Crash (target)
-    "A0AI": "lavamonster",       # W DoubleSpearMastery
-    "A0AL": "soulburn",          # E GaeBuidhe (target)
-    "A0AM": "volcano",           # R GaeDearg (target)
+    "A0AG": "transmute",         # Q Crash (→ANcl)
+    "A0AI": "lavamonster",       # W DoubleSpearMastery (→ANcl)
+    "A0AL": "soulburn",          # E GaeBuidhe (→ANcl)
+    "A0AM": "volcano",           # R GaeDearg (→ANcl)
     # Seal
-    "A094": "sealact",           # CommandSeal (first seal)
+    "A094": "sealact",           # CommandSeal (ANcl, Ncl6 patched)
 }
 w3a_data, aord_count = patch_w3a_add_aord(w3a_data, rl_aord_map)
 print(f"Patch RL-AORD: Added aord to {aord_count}/{len(rl_aord_map)} abilities")
@@ -434,12 +437,19 @@ def patch_w3a_convert_to_ancl(data, convert_map):
 # Key = ability ID, Value = Ncl6 order string (matches aord/HeroDataTable)
 rl_ancl_convert_map = {
     # Saber H000
+    "A087": "unavatar",          # Q InvisibleAir (was ANcl pre-existing)
+    "A01H": "unavengerform",     # W Caliburn (was ANcl pre-existing)
     "A02B": "divineshield",      # R Avalon (was ANbr)
     "A0A5": "roar",              # D SaberInstinct (was Absk)
     # Archer H001
+    "A019": "transmute",         # Q Kanshou&Bakuya (was ANcl pre-existing)
+    "A01B": "windwalk",          # W BrokenPhantasm (was AOwk)
+    "A014": "blight",            # E RhoAias (was AHtb)
     "A03C": "waterelemental",    # R UBW (was AEfk)
     # Lancer H002
+    "A035": "carrionscarabs",    # Q Rune-Ansuz (was AUcb)
     "A052": "blizzard",          # W SwiftStrikes (was Absk)
+    "A01K": "web",               # E GaeBolg (was Aweb)
     "A028": "forceofnature",     # R FlyingSpear (was ANcs)
     "A02T": "shockwave",         # D Rune-Ehwaz (was AIh2)
     "A03H": "mirrorimage",       # F Rune-Berkanan (was Asta)
@@ -461,17 +471,22 @@ rl_ancl_convert_map = {
     "A015": "darkconversion",    # R NineLives (was ANcs)
     # SaberAlter H007
     "A00B": "cripple",           # Q Tyrant (was Aroa)
+    "A07S": "recharge",          # W Vortigern (was Ambt)
     "A024": "possession",        # E PranaBurst (was AHtc)
     # TrueAssassin H008
     "A09Y": "inferno",           # Q Steal (was ANfd)
     "A018": "deathanddecay",     # W SelfReconstruction (was AEsb)
     # Gilgamesh H009
+    "A01Y": "unavengerform",     # Q Marduk (was ANcl pre-existing)
     "A01X": "creepthunderbolt",  # W Enkidu (was Amls)
     "A01Z": "cloudoffog",        # E GateOfBabylon (was ANst)
     # Avenger H028
     "A06J": "spellsteal",        # Q KillingIntent (was ACro)
+    "A05V": "polymorph",         # W TawrichZarich (was ACpy)
     "A05X": "drain",             # E Shade (was ANcr)
+    "A02P": "absorb",            # R VergAvesta (was Aabs)
     # Lancelot H03M
+    "A02Z": "charm",             # Q SubmachineGun (was ANcs)
     "A08F": "acidbomb",          # W DoubleEdgedSword (was Absk)
     "A08S": "healingspray",      # R Arondight (was ANcr)
     # Diarmuid H04D
