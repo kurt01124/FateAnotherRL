@@ -1,0 +1,135 @@
+# ============================================================
+# FateAnotherRL .gitignore
+# ============================================================
+
+# ------------------------------------------------------------
+# Build outputs — C++ / CMake
+# ------------------------------------------------------------
+/inference_server/build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+detect_cuda_compute_capabilities.cu
+detect_cuda_version.cc
+
+# MSBuild / Visual Studio generated project files
+*.vcxproj
+*.vcxproj.filters
+*.sln
+*.suo
+*.user
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.VC.opendb
+
+# ------------------------------------------------------------
+# Build outputs — C# / .NET
+# (EasyHook, JassNative, JNLoader have source; thirdparty/ has the DLLs)
+# ------------------------------------------------------------
+/EasyHook/Build/
+/JassNative/Build/
+/JNLoader/JNLoader/bin/
+/JNLoader/JNLoader/obj/
+/fateanother_rl/bin/
+/fateanother_rl/obj/
+
+# Generic bin/obj dirs (catches any nested build output)
+**/bin/
+**/obj/
+
+# VS solution/project directories
+.vs/
+
+# Debug symbols
+*.pdb
+*.ilk
+*.exp
+
+# ------------------------------------------------------------
+# Python
+# ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+.eggs/
+pip-wheel-metadata/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# ------------------------------------------------------------
+# Data directories (large runtime data — do NOT commit)
+# ------------------------------------------------------------
+/data/rollouts/
+/data/checkpoints/
+/data/runs/
+
+# NOTE: /data/models/ IS committed (*.pt tracked via LFS)
+
+# Top-level training artifact dirs
+/checkpoints/
+/runs/
+
+# ------------------------------------------------------------
+# Temporary / working files
+# ------------------------------------------------------------
+tmps/
+/MapPatch/tmps/
+*.tmp
+*.temp
+
+# Logs
+*.log
+/War3Client/logs/runtime/
+
+# ------------------------------------------------------------
+# Large archives (War3Client content is in the directory itself)
+# ------------------------------------------------------------
+War3Client.zip
+*.7z
+*.rar
+*.tar.gz
+
+# nuget tool (auto-downloaded)
+nuget.exe
+
+# ------------------------------------------------------------
+# OS files
+# ------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ------------------------------------------------------------
+# IDE / Editor files
+# ------------------------------------------------------------
+.vscode/
+.vs/
+*.code-workspace
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================
+# What IS committed (see .gitattributes for LFS tracking)
+# ============================================================
+# War3Client/     — all DLLs, EXEs, MPQs, W3Xs → LFS
+# thirdparty/     — third-party DLLs → LFS
+# MapPatch/       — .w3x map files, StormLib DLL → LFS
+# data/models/    — *.pt model files → LFS
+# EasyHook/packages/ — NuGet restore packages → LFS

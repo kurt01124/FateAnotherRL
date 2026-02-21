@@ -1,0 +1,23 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+
+using Cirnix.JassNative.Runtime.Plugin;
+
+namespace Cirnix.JassNative.Runtime
+{
+    static class TypeExtensions
+    {
+        public static bool Implements<T>(this Type type)
+        {
+            return type.GetInterfaces().Any(o => o.ToString().Contains(typeof(T).FullName));
+        }
+
+        public static IEnumerable<string> GetRequires(this Type type)
+        {
+            foreach (var attribute in type.GetCustomAttributesData())
+                if (attribute.ToString().Contains(typeof(RequiresAttribute).FullName))
+                    yield return attribute.ConstructorArguments[0].Value.ToString();
+        }
+    }
+}

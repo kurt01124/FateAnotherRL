@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net462</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <OutputType>Library</OutputType>
+    <RootNamespace>RLComm</RootNamespace>
+    <AssemblyName>RLCommPlugin</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Cirnix.JassNative.Runtime">
+      <HintPath>..\War3Client\Cirnix.JassNative.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Cirnix.JassNative">
+      <HintPath>..\War3Client\Cirnix.JassNative.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>..\War3Client\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

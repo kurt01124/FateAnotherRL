@@ -1,0 +1,48 @@
+# FateAnother RL - GPU App Layer
+# C++ inference server (libtorch GPU) + Python trainer
+# Fast layer (~60s build)
+#
+# 먼저 base 이미지 빌드 (최초 1회):
+#   docker build -f docker/Dockerfile.gpu.base -t fate-gpu-base .
+#
+# 이후 app 레이어 빌드:
+#   docker build -f docker/Dockerfile.gpu -t fate-gpu .
+#
+# Build context: repo root (..  from docker/)
+#   docker build -f docker/Dockerfile.gpu -t fate-gpu ..
+
+FROM fate-gpu-base:latest
+
+# --- C++ Inference Server ---
+COPY src/inference_server/ /app/inference_server/
+
+RUN TORCH_PREFIX=$(python3 -c "import torch; print(torch.utils.cmake_prefix_path)") && \
+    cmake -S /app/inference_server \
+          -B /app/inference_server/build_linux \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH="${TORCH_PREFIX}" && \
+    cmake --build /app/inference_server/build_linux --parallel $(nproc) && \
+    cp /app/inference_server/build_linux/fate_inference_server /usr/local/bin/fate_inference_server
+
+# --- Python Training Code ---
+COPY fateanother_rl/ /app/fateanother_rl/
+
+# --- Data Directories ---
+RUN mkdir -p /data/rollouts /data/models /data/checkpoints /data/runs
+
+# --- Environment ---
+ENV PYTHONPATH=/app
+
+# --- Entrypoints ---
+COPY docker/entrypoint.gpu.sh /entrypoint.sh
+COPY docker/entrypoint.inference.sh /entrypoint.inference.sh
+COPY docker/entrypoint.trainer.sh /entrypoint.trainer.sh
+RUN sed -i 's/\r$//' /entrypoint.sh /entrypoint.inference.sh /entrypoint.trainer.sh && \
+    chmod +x /entrypoint.sh /entrypoint.inference.sh /entrypoint.trainer.sh
+
+# UDP ports: 7777=STATE in (from WC3 container), 7778=ACTION out
+EXPOSE 7777/udp
+EXPOSE 7778/udp
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,31 @@
+# FateAnother RL - GPU Base Image
+# CUDA + PyTorch (libtorch) slow layer (~15min build)
+# 재빌드: docker build -f docker/Dockerfile.gpu.base -t fate-gpu-base .
+
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Build tools + Python
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        cmake \
+        g++ \
+        ninja-build \
+        python3 \
+        python3-pip \
+        python3-dev \
+        wget \
+        curl \
+        procps \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# PyTorch with CUDA 12.1 (includes libtorch for C++ build)
+RUN pip3 install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cu121
+
+# Python training dependencies
+RUN pip3 install --no-cache-dir \
+    numpy \
+    pyyaml \
+    tensorboard

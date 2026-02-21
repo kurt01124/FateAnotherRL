@@ -1,0 +1,57 @@
+# Git LFS tracking rules for FateAnotherRL
+# All binary files are tracked via LFS
+
+# Windows binaries
+*.dll filter=lfs diff=lfs merge=lfs -text
+*.exe filter=lfs diff=lfs merge=lfs -text
+*.lib filter=lfs diff=lfs merge=lfs -text
+
+# Warcraft 3 files
+*.w3x filter=lfs diff=lfs merge=lfs -text
+*.w3k filter=lfs diff=lfs merge=lfs -text
+*.mpq filter=lfs diff=lfs merge=lfs -text
+*.w3m filter=lfs diff=lfs merge=lfs -text
+
+# PyTorch / ML model files
+*.pt  filter=lfs diff=lfs merge=lfs -text
+*.pth filter=lfs diff=lfs merge=lfs -text
+*.onnx filter=lfs diff=lfs merge=lfs -text
+
+# Audio / Miles Sound System plugins
+*.mp3  filter=lfs diff=lfs merge=lfs -text
+*.wav  filter=lfs diff=lfs merge=lfs -text
+*.ogg  filter=lfs diff=lfs merge=lfs -text
+*.asi  filter=lfs diff=lfs merge=lfs -text
+*.m3d  filter=lfs diff=lfs merge=lfs -text
+*.flt  filter=lfs diff=lfs merge=lfs -text
+*.ax   filter=lfs diff=lfs merge=lfs -text
+
+# WC3 asset formats
+*.blp  filter=lfs diff=lfs merge=lfs -text
+*.mdx  filter=lfs diff=lfs merge=lfs -text
+*.mdl  filter=lfs diff=lfs merge=lfs -text
+
+# Archives / packages
+*.zip   filter=lfs diff=lfs merge=lfs -text
+*.nupkg filter=lfs diff=lfs merge=lfs -text
+
+# TensorBoard event files (binary)
+events.out.tfevents.* filter=lfs diff=lfs merge=lfs -text
+
+# Certificates / keys
+*.cer  filter=lfs diff=lfs merge=lfs -text
+*.pfx  filter=lfs diff=lfs merge=lfs -text
+
+# Ensure text files use LF line endings
+*.py   text eol=lf
+*.sh   text eol=lf
+*.cs   text eol=lf
+*.cpp  text eol=lf
+*.h    text eol=lf
+*.txt  text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.cmake text eol=lf
+*.bat  text eol=crlf

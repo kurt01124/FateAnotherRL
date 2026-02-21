@@ -1,0 +1,208 @@
+# FateAnother RL v4 — Scaled Architecture (5 Inference Shards)
+#
+# 1 Trainer (Python/GPU)  → 모델 학습, model_latest.pt 갱신
+# 5 Inference (C++/GPU)   → 각각 3 WC3 담당, model hot-reload
+# 15 WC3 (3 per inference) → 게임 실행, STATE 전송
+# 1 TensorBoard           → 학습 모니터링
+#
+# 최적 비율: WC3 3개 : 추론 1개 (검증 완료)
+# 모든 추론 서버가 공유 볼륨의 model_latest.pt를 hot-reload
+#
+# Usage:
+#   docker compose -f docker/docker-compose.v4.yml up -d
+#   docker compose -f docker/docker-compose.v4.yml logs -f trainer
+#   docker compose -f docker/docker-compose.v4.yml logs -f inference-1
+#   docker compose -f docker/docker-compose.v4.yml down
+
+# ── Reusable Fragments ──
+
+x-gpu-deploy: &gpu-deploy
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: 1
+          capabilities: [gpu]
+
+x-inference: &inference
+  image: fate-gpu:latest
+  entrypoint: ["/entrypoint.inference.sh"]
+  environment:
+    INFERENCE_PORT: "7777"
+    ACTION_PORT: "7778"
+    DEVICE: "cuda"
+    MODEL_DIR: "/data/models"
+    ROLLOUT_DIR: "/data/rollouts"
+    ROLLOUT_SIZE: "${ROLLOUT_SIZE:-2048}"
+  volumes:
+    - data:/data
+  depends_on:
+    - trainer
+  deploy:
+    <<: *gpu-deploy
+  restart: unless-stopped
+  shm_size: "128m"
+
+x-wc3-env: &wc3-env
+  WC3_SPEED_MULTIPLIER: "${WC3_SPEED:-10}"
+  INFERENCE_PORT: "7777"
+  RL_RECV_PORT: "7778"
+  WINEDEBUG: "-all"
+  VIS_HERO_ONLY: "${VIS_HERO_ONLY:-0}"
+
+x-wc3-deploy: &wc3-deploy
+  replicas: 3
+  resources:
+    limits:
+      memory: 5G
+      cpus: "2"
+
+# ── Services ──
+
+services:
+  # ── Python Trainer (GPU, 학습만) ──
+  trainer:
+    image: fate-gpu:latest
+    container_name: fate-trainer
+    entrypoint: ["/entrypoint.trainer.sh"]
+    environment:
+      MODEL_DIR: "/data/models"
+      ROLLOUT_DIR: "/data/rollouts"
+    volumes:
+      - data:/data
+    deploy:
+      <<: *gpu-deploy
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.10
+    restart: unless-stopped
+    shm_size: "256m"
+
+  # ── Inference Servers (C++ libtorch, GPU × 5) ──
+  inference-1:
+    <<: *inference
+    container_name: fate-inf-1
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.20
+
+  inference-2:
+    <<: *inference
+    container_name: fate-inf-2
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.21
+
+  inference-3:
+    <<: *inference
+    container_name: fate-inf-3
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.22
+
+  inference-4:
+    <<: *inference
+    container_name: fate-inf-4
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.23
+
+  inference-5:
+    <<: *inference
+    container_name: fate-inf-5
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.24
+
+  # ── WC3 Groups (3 replicas × 5 groups = 15 instances) ──
+  wc3-g1:
+    image: docker-wc3:latest
+    depends_on:
+      - inference-1
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.20"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g2:
+    image: docker-wc3:latest
+    depends_on:
+      - inference-2
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.21"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g3:
+    image: docker-wc3:latest
+    depends_on:
+      - inference-3
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.22"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g4:
+    image: docker-wc3:latest
+    depends_on:
+      - inference-4
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.23"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g5:
+    image: docker-wc3:latest
+    depends_on:
+      - inference-5
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.24"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  # ── TensorBoard ──
+  tensorboard:
+    image: tensorflow/tensorflow:latest
+    command: tensorboard --logdir /data/runs --host 0.0.0.0 --port 6006
+    ports:
+      - "6006:6006"
+    volumes:
+      - data:/data:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    networks:
+      - rlnet
+    restart: unless-stopped
+
+networks:
+  rlnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  data:

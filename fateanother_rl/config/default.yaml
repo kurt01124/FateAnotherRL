@@ -1,0 +1,30 @@
+model:
+  hidden_dim: 256
+  lstm_layers: 1
+  self_dim: 77
+  ally_dim: 37
+  enemy_dim: 41
+  global_dim: 6
+  grid_channels: 3
+
+ppo:
+  lr: 3e-4
+  gamma: 0.998
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  vf_coef: 0.5
+  ent_coef: 0.01
+  max_grad_norm: 0.5
+  ppo_epochs: 4
+  batch_size: 64
+  seq_len: 16
+
+training:
+  max_iterations: 100000
+  save_interval: 10
+  log_interval: 1
+  poll_interval: 1.0
+  save_dir: "checkpoints"
+  log_dir: "runs"
+  rollout_dir: "/data/rollouts"
+  model_dir: "/data/models"
