@@ -102,3 +102,14 @@ FateAnotherRL/
 ├── run_linux.sh           # Linux launcher
 └── run_docker.sh          # Docker launcher
 ```
+
+## Prerequisites
+
+### Warcraft III 1.28.5.7680 (필수)
+
+이 프로젝트는 **Warcraft III 1.28.5.7680** 버전에서만 동작합니다. JassNative DLL 인젝션과 메모리 오프셋이 이 버전에 맞춰져 있으므로, 다른 버전에서는 실행되지 않습니다.
+
+다운로드: https://drive.google.com/file/d/1Kuo-8hss8fX-IxLAdX62BFrpZdk9wPYI/view?usp=sharing
+
+> `War3Client/` 디렉토리에 압축 해제 후 사용하세요.
+
