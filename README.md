@@ -113,3 +113,23 @@ FateAnotherRL/
 
 > `War3Client/` 디렉토리에 압축 해제 후 사용하세요.
 
+## Credits & Acknowledgements
+
+### Fate/Another
+
+이 프로젝트는 **Fate/Another** 커스텀 맵 위에서 동작합니다. Fate/Another는 수년간 수많은 플레이어들에게 사랑받아온 명작 AOS 맵으로, 원작의 서번트들을 워크래프트 3 엔진 위에 놀라운 완성도로 구현해낸 작품입니다. 맵 제작자분들의 헌신과 창의력에 깊은 존경을 표합니다. 본 프로젝트는 원본 맵의 게임플레이를 AI 학습 환경으로 활용하기 위한 연구 목적의 프로젝트이며, 원작의 저작권을 침해할 의도가 없습니다.
+
+### Type-Moon
+
+**Fate/stay night**을 비롯한 Fate 시리즈의 세계관, 캐릭터, 설정은 모두 [Type-Moon](https://www.typemoon.com/)의 창작물입니다. 세이버, 아처, 랜서, 라이더, 캐스터, 어새신, 버서커 - 이 매력적인 서번트들이 없었다면 Fate/Another도, 이 프로젝트도 존재하지 않았을 것입니다. Nasu Kinoko와 Takeuchi Takashi를 비롯한 Type-Moon 여러분께 경의를 표합니다.
+
+### Blizzard Entertainment & Warcraft III
+
+**Warcraft III: Reign of Chaos / The Frozen Throne**는 [Blizzard Entertainment](https://www.blizzard.com/)가 만든 전설적인 RTS입니다. 강력한 World Editor와 JASS 스크립팅, 그리고 커스텀 맵 생태계는 수십 년이 지난 지금까지도 모더와 플레이어들의 창작을 가능하게 하고 있습니다. DotA, Fate/Another, 그리고 이 RL 프로젝트까지 - 모두 워크래프트 3라는 위대한 플랫폼 위에 세워진 것입니다.
+
+### Open Source
+
+- [EasyHook](https://github.com/EasyHook/EasyHook) - DLL injection framework
+- [Cirnix.JassNative](https://github.com/ScorpioN315/Cirnix.JassNative) - WC3 JASS native runtime
+- [StormLib](https://github.com/ladislav-zezula/StormLib) - MPQ archive library
+
