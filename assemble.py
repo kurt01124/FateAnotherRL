@@ -67,7 +67,7 @@ def find_csc():
 
 def run_build(cmd, label):
     log(f"    {label}...", "yellow")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         log(f"  FAILED: {label}", "red")
         output = (result.stdout + result.stderr).strip().split("\n")
@@ -233,7 +233,7 @@ def step_map():
 
     log("  Patching RL map...", "yellow")
     result = subprocess.run([sys.executable, rl_patch], cwd=MAPPATCH_DIR,
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         log("  Map patch failed!", "red")
         for line in (result.stdout + result.stderr).strip().split("\n")[-10:]:
