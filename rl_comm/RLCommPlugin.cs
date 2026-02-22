@@ -348,6 +348,86 @@ namespace RLComm
             OnTick();
         }
 
+        // Kill event: killer_pid, victim_pid
+        private delegate void RLKillDelegate(JassInteger killer, JassInteger victim);
+        private static void RLKillNative(JassInteger killer, JassInteger victim)
+        {
+            int k = (int)killer, v = (int)victim;
+            _eventQueue.Add(new JObject
+            {
+                ["type"] = "KILL",
+                ["killer"] = k,
+                ["victim"] = v,
+                ["tick"] = tickCount
+            });
+            if (k >= 0 && k < MAX_PLAYERS && v >= 0 && v < MAX_PLAYERS && k != v)
+            {
+                int kTeam = k < 6 ? 0 : 1, vTeam = v < 6 ? 0 : 1;
+                if (kTeam != vTeam)
+                {
+                    _advCount[v]++;
+                    if (_advCount[v] % 7 == 0)
+                        Log($"[RLComm] Faire available for p{v} (advCount={_advCount[v]})");
+                }
+            }
+        }
+
+        // Creep kill: killer_pid
+        private delegate void RLCreepDelegate(JassInteger killer);
+        private static void RLCreepNative(JassInteger killer)
+        {
+            _eventQueue.Add(new JObject
+            {
+                ["type"] = "CREEP_KILL",
+                ["killer"] = (int)killer,
+                ["tick"] = tickCount
+            });
+        }
+
+        // Level up: pid, newLevel
+        private delegate void RLLvUpDelegate(JassInteger pid, JassInteger level);
+        private static void RLLvUpNative(JassInteger pid, JassInteger level)
+        {
+            _eventQueue.Add(new JObject
+            {
+                ["type"] = "LEVEL_UP",
+                ["unit_idx"] = (int)pid,
+                ["new_level"] = (int)level,
+                ["tick"] = tickCount
+            });
+        }
+
+        // Portal: pid
+        private delegate void RLPortalDelegate(JassInteger pid);
+        private static void RLPortalNative(JassInteger pid)
+        {
+            int p = (int)pid;
+            _eventQueue.Add(new JObject
+            {
+                ["type"] = "PORTAL",
+                ["unit_idx"] = p,
+                ["tick"] = tickCount
+            });
+        }
+
+        // Alarm: pid
+        private delegate void RLAlarmDelegate(JassInteger pid);
+        private static void RLAlarmNative(JassInteger pid)
+        {
+            int p = (int)pid;
+            if (p >= 0 && p < MAX_PLAYERS)
+                _alarmState[p] = true;
+        }
+
+        // Game done: winTeam
+        private delegate void RLDoneDelegate(JassInteger winTeam);
+        private static void RLDoneNative(JassInteger winTeam)
+        {
+            int wt = (int)winTeam;
+            Log($"[RLComm] RL_DONE native: winTeam={wt}, triggering episode end");
+            episodeState = 4;
+        }
+
         private delegate JassInteger GetRandomIntDelegate(JassInteger low, JassInteger high);
         private static JassInteger GetRandomIntOverride(JassInteger low, JassInteger high)
         {
@@ -1896,9 +1976,14 @@ namespace RLComm
         // ============================================================
         private delegate void PreloaderDelegate(JassStringArg filename);
 
+        private static int _preloaderCallCount;
         private static void PreloaderOverride(JassStringArg filename)
         {
             string cmd = (string)filename;
+            _preloaderCallCount++;
+            // DEBUG: log EVERY Preloader call to find why RL_KILL never arrives
+            if (_preloaderCallCount <= 200 || (cmd != null && cmd.StartsWith("RL")))
+                Log($"[RLComm] Preloader#{_preloaderCallCount}: \"{cmd}\"");
             if (cmd == null || cmd.Length == 0) return;
             if (!cmd.StartsWith("RL")) return;
 
@@ -5502,6 +5587,12 @@ namespace RLComm
             Natives.Add(new RLSetPDATDelegate(RLSetPDAT), "RLSetPDAT", "(IIIIIIIIIIIIII)V");
             Natives.Add(new RLSetScoreDelegate(RLSetScore), "RLSetScore", "(II)V");
             Natives.Add(new RLTickDelegate(RLTickNative), "RLTick", "(I)V");
+            Natives.Add(new RLKillDelegate(RLKillNative), "RLKill", "(II)V");
+            Natives.Add(new RLCreepDelegate(RLCreepNative), "RLCreep", "(I)V");
+            Natives.Add(new RLLvUpDelegate(RLLvUpNative), "RLLvUp", "(II)V");
+            Natives.Add(new RLPortalDelegate(RLPortalNative), "RLPortal", "(I)V");
+            Natives.Add(new RLAlarmDelegate(RLAlarmNative), "RLAlarm", "(I)V");
+            Natives.Add(new RLDoneDelegate(RLDoneNative), "RLDone", "(I)V");
             Log($"[RLComm] All natives registered (RNG seed={Environment.TickCount})");
         }
 

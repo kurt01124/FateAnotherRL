@@ -1,0 +1,31 @@
+# Git
+.git
+
+# War3Client - do NOT exclude (needed by Dockerfile.wc3)
+
+# IDE / build artifacts
+.vs/
+*.suo
+*.user
+inference_server/build/
+inference_server/build_linux/
+
+# Python cache
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Data (models are COPY'd explicitly)
+data/rollouts/
+data/checkpoints/
+data/runs/
+
+# Docker (keep docker/ - entrypoint.sh needed by Dockerfile.wc3)
+
+# Misc
+*.png
+*.jpg
+MapPatch/
+EasyHook/
+JassNative/
+JNLoader/
