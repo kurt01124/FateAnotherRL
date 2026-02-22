@@ -68,6 +68,10 @@ services:
     environment:
       MODEL_DIR: "/data/models"
       ROLLOUT_DIR: "/data/rollouts"
+      CHECKPOINT_DIR: "/data/checkpoints"
+      LOG_DIR: "/data/runs"
+      FRESH_START: "${FRESH_START:-0}"
+      RESUME: "${RESUME:-auto}"
     volumes:
       - data:/data
     deploy:
