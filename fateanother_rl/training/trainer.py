@@ -157,6 +157,13 @@ class RolloutTrainer:
         self.iteration = 0
         self.total_transitions = 0
 
+        # --- Best model tracking (per-hero EMA reward) ---
+        self.ema_alpha = 0.05  # smoothing factor: ~20 iteration window
+        self.ema_reward = {hid: 0.0 for hid in HERO_IDS}
+        self.best_reward = {hid: float("-inf") for hid in HERO_IDS}
+        self.best_dir = self.save_dir / "best"
+        self.best_dir.mkdir(parents=True, exist_ok=True)
+
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
@@ -227,10 +234,13 @@ class RolloutTrainer:
                 # 6. Export model for C++ hot-reload
                 self._export_model()
 
-                # 7. Cleanup processed rollout
+                # 7. Update best models (per-hero EMA reward)
+                self._update_best(data)
+
+                # 8. Cleanup processed rollout
                 rollout_path.unlink(missing_ok=True)
 
-                # 8. Logging
+                # 9. Logging
                 if self.iteration % self.log_interval == 0:
                     self._log(self.iteration, losses, n_transitions, t_elapsed, data)
 
@@ -370,12 +380,37 @@ class RolloutTrainer:
                     T = rewards.shape[0]
                     self.tb_logger.log_scalar("rollout/episode_length", T, iteration)
 
+        # Per-hero EMA reward
+        for hero_idx, hero_id in enumerate(HERO_IDS):
+            self.tb_logger.log_scalar(f"best/{hero_id}_ema", self.ema_reward[hero_id], iteration)
+            self.tb_logger.log_scalar(f"best/{hero_id}_best", self.best_reward[hero_id], iteration)
+
         logger.info(
             "Iter %d | %d trans | %.1fs | policy=%.4f value=%.4f ent=%.4f kl=%.4f",
             iteration, n_transitions, elapsed,
             losses.get("policy_loss", 0), losses.get("value_loss", 0),
             losses.get("entropy", 0), losses.get("approx_kl", 0),
         )
+
+    def _update_best(self, data: dict):
+        """Update per-hero EMA reward and save best models."""
+        rewards = data.get("rewards")  # (T, 12)
+        if rewards is None:
+            return
+
+        per_agent = rewards.float().mean(dim=0)  # (12,)
+        for hero_idx, hero_id in enumerate(HERO_IDS):
+            r = per_agent[hero_idx].item()
+            # EMA update
+            self.ema_reward[hero_id] = (
+                self.ema_alpha * r + (1 - self.ema_alpha) * self.ema_reward[hero_id]
+            )
+            # Check best (skip first 10 iterations for EMA warmup)
+            if self.iteration > 10 and self.ema_reward[hero_id] > self.best_reward[hero_id]:
+                self.best_reward[hero_id] = self.ema_reward[hero_id]
+                best_path = str(self.best_dir / f"best_{hero_id}.pt")
+                export_model(self.models[hero_id], best_path, device="cpu")
+                logger.info("New best %s: EMA=%.4f (iter %d)", hero_id, self.best_reward[hero_id], self.iteration)
 
     def _save_checkpoint(self, iteration: int):
         """Save training checkpoint (per-hero models + optimizers + counters)."""
@@ -385,6 +420,8 @@ class RolloutTrainer:
             "total_transitions": self.total_transitions,
             "model_states": {hid: m.state_dict() for hid, m in self.models.items()},
             "optimizer_states": {hid: o.state_dict() for hid, o in self.optimizers.items()},
+            "ema_reward": self.ema_reward,
+            "best_reward": self.best_reward,
         }, str(path))
         logger.info("Checkpoint saved: %s", path)
 
@@ -408,6 +445,10 @@ class RolloutTrainer:
 
         self.iteration = ckpt.get("iteration", 0)
         self.total_transitions = ckpt.get("total_transitions", 0)
+        if "ema_reward" in ckpt:
+            self.ema_reward.update(ckpt["ema_reward"])
+        if "best_reward" in ckpt:
+            self.best_reward.update(ckpt["best_reward"])
         logger.info("Loaded checkpoint: %s (iter=%d)", path, self.iteration)
         # Re-export models so C++ picks up resumed weights
         self._export_model()
