@@ -3,9 +3,9 @@ model:
   lstm_layers: 1
   self_dim: 77
   ally_dim: 37
-  enemy_dim: 41
+  enemy_dim: 43
   global_dim: 6
-  grid_channels: 3
+  grid_channels: 6
 
 ppo:
   lr: 3e-4
