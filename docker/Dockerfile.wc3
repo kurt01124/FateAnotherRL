@@ -1,0 +1,46 @@
+# FateAnother RL - WC3 Container
+# Wine + .NET 4.6.2 + Warcraft III 1.28.5 + RL plugins
+#
+# Requires wc3-base image (wine + .NET pre-installed):
+#   docker build -f docker/Dockerfile.wc3 -t docker-wc3 .
+#
+# Build context: repo root
+
+FROM wc3-base:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV WINEPREFIX=/root/.wine
+ENV WINEARCH=win32
+ENV WINEDEBUG=-all
+
+# Extra tools for headless operation
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        xauth cabextract wget scrot xdotool python3 procps tini \
+    && wget -q https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks -O /usr/local/bin/winetricks \
+    && chmod +x /usr/local/bin/winetricks \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Mesa for software rendering (headless)
+RUN apt-get update -qq && \
+    apt-get install -y -qq \
+        libgl1-mesa-dri:i386 \
+        libgl1-mesa-glx:i386 \
+        libgl1-mesa-dri \
+        libgl1-mesa-glx \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# WC3 game files + RL plugins + patched map
+COPY War3Client /opt/wc3/
+
+# Allow local files in WC3 registry
+RUN xvfb-run -a wine reg add "HKCU\\SOFTWARE\\Blizzard Entertainment\\Warcraft III" \
+    /v "Allow Local Files" /t REG_DWORD /d 1 /f && wineserver --wait
+
+# Entrypoint for episode loop
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+
+HEALTHCHECK NONE
+
+ENTRYPOINT ["tini", "--", "xvfb-run", "-n", "99", "-s", "-screen 0 800x600x24 -nolisten tcp", "/entrypoint.sh"]
