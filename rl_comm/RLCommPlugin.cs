@@ -65,6 +65,7 @@ namespace RLComm
         // ============================================================
         private static JassUnit[] heroes = new JassUnit[MAX_PLAYERS];
         private static int[] heroHandleIds = new int[MAX_PLAYERS];
+        private static int[] heroTypeIds = new int[MAX_PLAYERS];  // original typeId at registration (morph-proof)
         private static bool[] heroRegistered = new bool[MAX_PLAYERS];
         private static int heroCount;
         private static volatile bool heroesReady;
@@ -2053,9 +2054,10 @@ namespace RLComm
                         {
                             heroes[pid] = new JassUnit(new IntPtr(hid));
                             heroHandleIds[pid] = hid;
+                            try { heroTypeIds[pid] = (int)Natives.GetUnitTypeId(new JassUnit(new IntPtr(hid))); } catch { }
                             heroRegistered[pid] = true;
                             heroCount++;
-                            Log($"[RLComm] Hero registered: p{pid} hid={hid} ({heroCount}/{MAX_PLAYERS})");
+                            Log($"[RLComm] Hero registered: p{pid} hid={hid} type={TypeIdToString(heroTypeIds[pid])} ({heroCount}/{MAX_PLAYERS})");
                             if (heroCount >= MAX_PLAYERS)
                             {
                                 heroesReady = true;
@@ -2386,8 +2388,7 @@ namespace RLComm
                 }
 
                 JassUnit u = heroes[i];
-                int typeId = 0;
-                try { typeId = (int)Natives.GetUnitTypeId(u); } catch { }
+                int typeId = heroTypeIds[i];  // use registered typeId (morph-proof)
                 string heroIdStr = TypeIdToString(typeId);
 
                 // Basic stats
@@ -3468,8 +3469,7 @@ namespace RLComm
                     }
 
                     JassUnit u = heroes[i];
-                    int typeId = 0;
-                    try { typeId = (int)Natives.GetUnitTypeId(u); } catch { }
+                    int typeId = heroTypeIds[i];  // use registered typeId (morph-proof)
                     string heroIdStr = TypeIdToString(typeId);
 
                     // Basic stats
