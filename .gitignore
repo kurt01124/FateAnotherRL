@@ -13,10 +13,10 @@ cmake_install.cmake
 detect_cuda_compute_capabilities.cu
 detect_cuda_version.cc
 
-# MSBuild / Visual Studio generated project files
-*.vcxproj
-*.vcxproj.filters
-*.sln
+# MSBuild / Visual Studio generated project files (build dirs only)
+/inference_server/build/*.vcxproj
+/inference_server/build/*.vcxproj.filters
+/inference_server/build/*.sln
 *.suo
 *.user
 *.opensdf
