@@ -69,14 +69,9 @@ def ppo_loss(
 
 
 def get_entropy_coef(iteration: int, max_iterations: int = 100000) -> float:
-    """Entropy coefficient schedule.
+    """Legacy entropy schedule -- no longer used.
 
-    Start low, decay further over time.
+    Adaptive entropy is now managed by the trainer. This function is kept
+    for backward compatibility but simply returns a constant.
     """
-    progress = iteration / max(max_iterations, 1)
-    if progress < 0.3:
-        return 0.01
-    elif progress < 0.7:
-        return 0.005
-    else:
-        return 0.001
+    return 0.01

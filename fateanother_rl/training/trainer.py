@@ -5,12 +5,15 @@ Architecture:
   Python trainer: loads .pt files, runs PPO update, exports TorchScript model
   C++ hot-reloads updated model for next rollout
 
-No TCP, no env module, no Docker/Wine -- pure offline training loop.
+Synchronous batch training: waits for sync_rollouts files (default 15),
+merges into one big buffer, then runs PPO. Includes adaptive entropy
+coefficient, gamma annealing, and per-hero auto-rollback.
 """
 
 import logging
 import struct
 import time
+from collections import deque
 from itertools import count
 from pathlib import Path
 
@@ -23,12 +26,12 @@ from fateanother_rl.data.constants import NUM_HEROES, HERO_IDS, DISCRETE_HEADS
 from fateanother_rl.model.policy import FateModel
 from fateanother_rl.model.export import export_model
 from fateanother_rl.training.buffer import TensorRolloutBuffer
-from fateanother_rl.training.ppo import ppo_loss, get_entropy_coef
+from fateanother_rl.training.ppo import ppo_loss
 from fateanother_rl.utils.logger import Logger
 
 logger = logging.getLogger(__name__)
 
-# C++ ScalarType enum → torch dtype mapping
+# C++ ScalarType enum -> torch dtype mapping
 _DTYPE_MAP = {
     0: torch.uint8,
     1: torch.int8,
@@ -84,14 +87,15 @@ def load_fate_rollout(path: str) -> dict:
 class RolloutTrainer:
     """Offline trainer that reads .pt rollout files from C++ inference server.
 
-    Workflow per iteration:
-      1. Wait for rollout_*.pt in rollout_dir
-      2. Load tensor data
-      3. Build RolloutBuffer from loaded data
-      4. Compute GAE advantages
-      5. PPO update (same loss, same sequence chunking)
-      6. Export TorchScript model for C++ hot-reload
-      7. Delete processed rollout file
+    Synchronous batch workflow per iteration:
+      1. Wait for sync_rollouts .pt files (default 15)
+      2. Load all rollouts, build TensorRolloutBuffers
+      3. Merge buffers into one large (sum_T, 12, ...) buffer
+      4. Compute GAE with annealed gamma
+      5. Per-hero PPO update with adaptive entropy
+      6. Export TorchScript models for C++ hot-reload
+      7. Auto-rollback heroes whose EMA reward drops >threshold below best
+      8. Delete processed rollout files
     """
 
     def __init__(self, config: dict):
@@ -134,7 +138,7 @@ class RolloutTrainer:
 
         # --- PPO config ---
         self.ppo_epochs = int(ppo_cfg.get("ppo_epochs", 4))
-        self.batch_size = int(ppo_cfg.get("batch_size", 64))
+        self.batch_size = int(ppo_cfg.get("batch_size", 4096))
         self.seq_len = int(ppo_cfg.get("seq_len", 16))
         self.clip_eps = float(ppo_cfg.get("clip_eps", 0.2))
         self.vf_coef = float(ppo_cfg.get("vf_coef", 0.5))
@@ -143,12 +147,19 @@ class RolloutTrainer:
         # --- Training config ---
         self.max_iterations = int(train_cfg.get("max_iterations", 100000))
         self.save_interval = int(train_cfg.get("save_interval", 50))
-        self.log_interval = int(train_cfg.get("log_interval", 10))
+        self.log_interval = int(train_cfg.get("log_interval", 1))
         self.poll_interval = float(train_cfg.get("poll_interval", 1.0))
+        self.sync_rollouts = int(train_cfg.get("sync_rollouts", 15))
 
-        # --- GAE config ---
-        self.gamma = float(ppo_cfg.get("gamma", 0.99))
+        # --- GAE config (initial, may be annealed) ---
+        self.gamma = float(ppo_cfg.get("gamma", 0.998))
         self.gae_lambda = float(ppo_cfg.get("gae_lambda", 0.95))
+
+        # --- Adaptive entropy + gamma ---
+        adaptive_cfg = config.get("adaptive", {})
+        self.adaptive_cfg = adaptive_cfg
+        self.ent_coef = float(adaptive_cfg.get("ent_coef_init", 0.01))
+        self.reward_history: deque = deque(maxlen=1000)
 
         # --- Logger ---
         self.tb_logger = Logger(log_dir=str(train_cfg.get("log_dir", "runs")))
@@ -168,8 +179,8 @@ class RolloutTrainer:
     # Main entry point
     # ------------------------------------------------------------------
     def train(self):
-        """Main training loop. Runs until max_iterations or KeyboardInterrupt."""
-        logger.info("=== RolloutTrainer Start ===")
+        """Main training loop. Waits for sync_rollouts files per iteration."""
+        logger.info("=== RolloutTrainer Start (sync=%d) ===", self.sync_rollouts)
         logger.info("Rollout dir: %s", self.rollout_dir)
         logger.info("Model dir: %s", self.model_dir)
 
@@ -183,66 +194,72 @@ class RolloutTrainer:
                     logger.info("Max iterations reached (%d). Stopping.", self.max_iterations)
                     break
 
-                # 1. Wait for rollout file
-                rollout_path = self._wait_for_rollout()
+                # 1. Wait for sync_rollouts files
+                rollout_paths = self._wait_for_rollouts()
                 t_start = time.time()
 
-                # 2. Load rollout data (with retry for partial writes)
-                logger.info("Loading rollout: %s", rollout_path.name)
-                data = None
-                for attempt in range(3):
+                # 2. Load all rollouts and merge
+                buffers = []
+                loaded_paths = []
+                for rp in rollout_paths:
+                    logger.info("Loading rollout: %s", rp.name)
                     try:
-                        data = load_fate_rollout(str(rollout_path))
-                        break
+                        data = load_fate_rollout(str(rp))
+                        buf = TensorRolloutBuffer(data, gamma=self.gamma, lam=self.gae_lambda)
+                        if buf.total_transitions() > 0:
+                            buffers.append(buf)
+                            loaded_paths.append(rp)
                     except Exception as e:
-                        if attempt < 2:
-                            logger.warning("Load attempt %d failed for %s: %s. Retrying in 2s...",
-                                           attempt + 1, rollout_path.name, e)
-                            time.sleep(2)
-                        else:
-                            logger.error("Failed to load rollout %s after 3 attempts: %s",
-                                         rollout_path.name, e)
-                            rollout_path.unlink(missing_ok=True)
-                if data is None:
+                        logger.error("Failed to load %s: %s", rp.name, e)
+
+                if not buffers:
+                    # All loads failed -- clean up and retry
+                    for rp in rollout_paths:
+                        rp.unlink(missing_ok=True)
                     continue
 
-                # 3. Build buffer from loaded data
-                try:
-                    buffer = self._build_buffer(data)
-                except Exception as e:
-                    logger.error("Failed to build buffer from %s: %s", rollout_path.name, e)
-                    rollout_path.unlink(missing_ok=True)
-                    continue
+                # Merge all buffers
+                if len(buffers) == 1:
+                    buffer = buffers[0]
+                else:
+                    buffer = TensorRolloutBuffer.merge(buffers)
 
                 n_transitions = buffer.total_transitions()
                 self.total_transitions += n_transitions
 
-                if n_transitions == 0:
-                    logger.warning("Empty rollout file: %s. Skipping.", rollout_path.name)
-                    rollout_path.unlink(missing_ok=True)
-                    continue
+                # 3. Compute GAE with current (possibly annealed) gamma
+                buffer.gamma = self.gamma
+                buffer.compute_gae()
 
-                # 4. Compute GAE
-                last_values = data.get("bootstrap_values", None)
-                buffer.compute_gae(last_values)
-
-                # 5. PPO update
+                # 4. PPO update with adaptive entropy
                 losses = self._ppo_update(buffer)
                 self.iteration += 1
                 t_elapsed = time.time() - t_start
 
-                # 6. Export model for C++ hot-reload
+                # 5. Adaptive entropy update
+                self._adapt_entropy()
+
+                # 6. Gamma annealing
+                self._anneal_gamma()
+
+                # 7. Export model for C++ hot-reload
                 self._export_model()
 
-                # 7. Update best models (per-hero EMA reward)
-                self._update_best(data)
+                # 8. Update best models + auto rollback check
+                self._update_best_and_rollback(buffers)
 
-                # 8. Cleanup processed rollout
-                rollout_path.unlink(missing_ok=True)
+                # 9. Cleanup processed rollouts
+                for rp in loaded_paths:
+                    rp.unlink(missing_ok=True)
+                # Also clean up any rollouts that failed to load
+                for rp in rollout_paths:
+                    if rp not in loaded_paths:
+                        rp.unlink(missing_ok=True)
 
-                # 9. Logging
+                # 10. Logging
                 if self.iteration % self.log_interval == 0:
-                    self._log(self.iteration, losses, n_transitions, t_elapsed, data)
+                    self._log(self.iteration, losses, n_transitions, t_elapsed,
+                              merged_count=len(loaded_paths))
 
                 if self.iteration % self.save_interval == 0:
                     self._save_checkpoint(self.iteration)
@@ -258,39 +275,32 @@ class RolloutTrainer:
     # ------------------------------------------------------------------
     # Rollout file loading
     # ------------------------------------------------------------------
-    def _wait_for_rollout(self) -> Path:
-        """Poll rollout directory for new .pt files.
-
-        Files are sorted by name (expected format: rollout_{timestamp}.pt)
-        so oldest files are processed first.
-
-        Returns:
-            Path to the first available rollout file.
-        """
+    def _wait_for_rollouts(self) -> list[Path]:
+        """Wait for sync_rollouts files. Proceeds with 80%+ after 10min patience."""
+        first_seen = None
         while True:
             files = sorted(self.rollout_dir.glob("rollout_*.pt"))
-            if files:
-                return files[0]
+            if len(files) >= self.sync_rollouts:
+                return files[:self.sync_rollouts]
+            # Safety: don't hang forever if some WC3 instances crash
+            if files and first_seen is None:
+                first_seen = time.time()
+            if first_seen and len(files) >= max(1, int(self.sync_rollouts * 0.8)):
+                if time.time() - first_seen > 600:
+                    logger.warning("Patience expired: got %d/%d rollouts, proceeding",
+                                   len(files), self.sync_rollouts)
+                    first_seen = None
+                    return files
+            if not files:
+                first_seen = None
             time.sleep(self.poll_interval)
-
-    def _build_buffer(self, data: dict) -> TensorRolloutBuffer:
-        """Convert loaded tensor data into TensorRolloutBuffer (vectorized).
-
-        Uses direct tensor slicing instead of creating per-transition objects.
-        ~100x faster than old RolloutBuffer.from_tensor_data().
-        """
-        return TensorRolloutBuffer(
-            data,
-            gamma=self.gamma,
-            lam=self.gae_lambda,
-        )
 
     # ------------------------------------------------------------------
     # PPO update
     # ------------------------------------------------------------------
-    def _ppo_update(self, buffer) -> dict:
-        """Run per-hero PPO on the given buffer."""
-        ent_coef = get_entropy_coef(self.iteration, self.max_iterations)
+    def _ppo_update(self, buffer: TensorRolloutBuffer) -> dict:
+        """Run per-hero PPO on the given buffer with adaptive entropy."""
+        ent_coef = self.ent_coef
 
         all_stats = []
 
@@ -329,6 +339,129 @@ class RolloutTrainer:
         return {}
 
     # ------------------------------------------------------------------
+    # Adaptive entropy
+    # ------------------------------------------------------------------
+    def _adapt_entropy(self):
+        """Adapt entropy coefficient based on reward plateau detection.
+
+        If reward is improving, reduce exploration (decay ent_coef).
+        If reward is plateauing/declining, increase exploration (raise ent_coef).
+        """
+        cfg = self.adaptive_cfg
+        window = int(cfg.get("plateau_window", 20))
+
+        if len(self.reward_history) < window:
+            return  # Not enough data yet
+
+        recent = list(self.reward_history)[-window:]
+        if len(self.reward_history) >= window * 2:
+            old = list(self.reward_history)[-window * 2:-window]
+        else:
+            old = list(self.reward_history)[:window]
+
+        recent_mean = sum(recent) / len(recent)
+        old_mean = sum(old) / len(old)
+
+        improving = recent_mean > old_mean + 1e-4
+
+        if improving:
+            # Reward improving -> reduce exploration
+            self.ent_coef = max(
+                float(cfg.get("ent_coef_min", 0.003)),
+                self.ent_coef * float(cfg.get("ent_down", 0.995)),
+            )
+        else:
+            # Plateau/declining -> increase exploration
+            self.ent_coef = min(
+                float(cfg.get("ent_coef_max", 0.02)),
+                self.ent_coef * float(cfg.get("ent_up", 1.01)),
+            )
+
+        logger.info("Adaptive entropy: %.5f (improving=%s, recent=%.4f, old=%.4f)",
+                     self.ent_coef, improving, recent_mean, old_mean)
+
+    # ------------------------------------------------------------------
+    # Gamma annealing
+    # ------------------------------------------------------------------
+    def _anneal_gamma(self):
+        """Linear gamma annealing from gamma_init to gamma_final."""
+        cfg = self.adaptive_cfg
+        gamma_init = float(cfg.get("gamma_init", 0.998))
+        gamma_final = float(cfg.get("gamma_final", 0.9995))
+        anneal_iters = int(cfg.get("gamma_anneal_iters", 50000))
+
+        progress = min(1.0, self.iteration / max(anneal_iters, 1))
+        self.gamma = gamma_init + (gamma_final - gamma_init) * progress
+
+    # ------------------------------------------------------------------
+    # Best model tracking + auto-rollback
+    # ------------------------------------------------------------------
+    def _update_best_and_rollback(self, buffers: list[TensorRolloutBuffer]):
+        """Update per-hero EMA reward, save best models, auto-rollback on collapse.
+
+        Rollback restores a hero's weights from the best saved state_dict if its
+        EMA reward drops more than rollback_threshold below the best EMA.
+        """
+        # Compute mean reward across all loaded buffers
+        all_rewards = torch.cat([b.rewards for b in buffers], dim=0)  # (sum_T, 12)
+        per_agent = all_rewards.float().mean(dim=0)  # (12,)
+
+        rollback_threshold = float(self.adaptive_cfg.get("rollback_threshold", 0.30))
+        any_rollback = False
+
+        for hero_idx, hero_id in enumerate(HERO_IDS):
+            r = per_agent[hero_idx].item()
+            # EMA update
+            self.ema_reward[hero_id] = (
+                self.ema_alpha * r + (1 - self.ema_alpha) * self.ema_reward[hero_id]
+            )
+
+            # Check best (skip first 10 iterations for EMA warmup)
+            if self.iteration > 10 and self.ema_reward[hero_id] > self.best_reward[hero_id]:
+                self.best_reward[hero_id] = self.ema_reward[hero_id]
+                # Save TorchScript model (for C++ inference)
+                best_path = str(self.best_dir / f"best_{hero_id}.pt")
+                export_model(self.models[hero_id], best_path, device="cpu")
+                # Save raw state_dict (for Python rollback -- can't easily load
+                # TorchScript back into nn.Module)
+                state_path = str(self.best_dir / f"best_{hero_id}_state.pt")
+                torch.save(self.models[hero_id].state_dict(), state_path)
+                logger.info("New best %s: EMA=%.4f (iter %d)",
+                            hero_id, self.best_reward[hero_id], self.iteration)
+
+            # Auto-rollback: if EMA drops >threshold below best
+            if (self.iteration > 30 and
+                    self.best_reward[hero_id] > 0 and
+                    self.ema_reward[hero_id] < self.best_reward[hero_id] * (1 - rollback_threshold)):
+                state_path = self.best_dir / f"best_{hero_id}_state.pt"
+                if state_path.exists():
+                    logger.warning(
+                        "ROLLBACK %s: EMA=%.4f < best=%.4f * %.0f%%. Restoring best model.",
+                        hero_id, self.ema_reward[hero_id], self.best_reward[hero_id],
+                        (1 - rollback_threshold) * 100,
+                    )
+                    state = torch.load(str(state_path), map_location=self.device, weights_only=True)
+                    self.models[hero_id].load_state_dict(state)
+                    # Reset EMA to near-best to prevent repeated rollbacks
+                    self.ema_reward[hero_id] = self.best_reward[hero_id] * 0.95
+                    any_rollback = True
+
+        if any_rollback:
+            # Bump entropy to help re-explore after rollback
+            old_ent = self.ent_coef
+            self.ent_coef = min(
+                float(self.adaptive_cfg.get("ent_coef_max", 0.02)),
+                self.ent_coef * 1.5,
+            )
+            logger.info("Post-rollback entropy bump: %.5f -> %.5f", old_ent, self.ent_coef)
+            # Re-export the rolled-back models
+            self._export_model()
+
+        # Track mean reward for plateau detection (adaptive entropy)
+        mean_r = per_agent.mean().item()
+        self.reward_history.append(mean_r)
+
+    # ------------------------------------------------------------------
     # Model export
     # ------------------------------------------------------------------
     def _export_model(self):
@@ -349,36 +482,24 @@ class RolloutTrainer:
     # Logging and checkpoints
     # ------------------------------------------------------------------
     def _log(self, iteration: int, losses: dict, n_transitions: int, elapsed: float,
-             data: dict = None):
-        """Log training metrics."""
+             merged_count: int = 1):
+        """Log training metrics to TensorBoard and console."""
         self.tb_logger.log_iteration(iteration, losses)
         self.tb_logger.log_scalar("train/total_transitions", self.total_transitions, iteration)
         self.tb_logger.log_scalar("train/rollout_transitions", n_transitions, iteration)
         self.tb_logger.log_scalar("train/update_time", elapsed, iteration)
+        self.tb_logger.log_scalar("train/merged_rollouts", merged_count, iteration)
 
-        # Log reward and episode stats from rollout data
-        if data is not None:
-            rewards = data.get("rewards")  # (T, 12)
-            dones = data.get("dones")      # (T, 12)
-            if rewards is not None:
-                rewards_f = rewards.float()
-                self.tb_logger.log_scalar("rollout/reward_mean", rewards_f.mean().item(), iteration)
-                self.tb_logger.log_scalar("rollout/reward_std", rewards_f.std().item(), iteration)
-                self.tb_logger.log_scalar("rollout/reward_min", rewards_f.min().item(), iteration)
-                self.tb_logger.log_scalar("rollout/reward_max", rewards_f.max().item(), iteration)
-                # Per-agent mean reward
-                per_agent = rewards_f.mean(dim=0)  # (12,)
-                self.tb_logger.log_scalar("rollout/reward_team0", per_agent[:6].mean().item(), iteration)
-                self.tb_logger.log_scalar("rollout/reward_team1", per_agent[6:].mean().item(), iteration)
-            if dones is not None:
-                n_done = dones.sum().item()
-                self.tb_logger.log_scalar("rollout/num_dones", n_done, iteration)
-                if rewards is not None and n_done > 0:
-                    # Compute episode return: sum of rewards per agent in this rollout
-                    ep_return = rewards.float().sum(dim=0).mean().item()  # mean over 12 agents
-                    self.tb_logger.log_scalar("rollout/episode_return", ep_return, iteration)
-                    T = rewards.shape[0]
-                    self.tb_logger.log_scalar("rollout/episode_length", T, iteration)
+        # Adaptive metrics
+        self.tb_logger.log_scalar("adaptive/ent_coef", self.ent_coef, iteration)
+        self.tb_logger.log_scalar("adaptive/gamma", self.gamma, iteration)
+
+        # Reward stats from reward_history
+        if self.reward_history:
+            self.tb_logger.log_scalar("rollout/reward_mean", self.reward_history[-1], iteration)
+        if len(self.reward_history) >= 2:
+            recent = list(self.reward_history)[-20:]
+            self.tb_logger.log_scalar("rollout/reward_mean_20", sum(recent) / len(recent), iteration)
 
         # Per-hero EMA reward
         for hero_idx, hero_id in enumerate(HERO_IDS):
@@ -386,34 +507,16 @@ class RolloutTrainer:
             self.tb_logger.log_scalar(f"best/{hero_id}_best", self.best_reward[hero_id], iteration)
 
         logger.info(
-            "Iter %d | %d trans | %.1fs | policy=%.4f value=%.4f ent=%.4f kl=%.4f",
-            iteration, n_transitions, elapsed,
+            "Iter %d | %d trans (%d rollouts) | %.1fs | policy=%.4f value=%.4f "
+            "ent=%.4f kl=%.4f | ent_coef=%.5f gamma=%.5f",
+            iteration, n_transitions, merged_count, elapsed,
             losses.get("policy_loss", 0), losses.get("value_loss", 0),
             losses.get("entropy", 0), losses.get("approx_kl", 0),
+            self.ent_coef, self.gamma,
         )
 
-    def _update_best(self, data: dict):
-        """Update per-hero EMA reward and save best models."""
-        rewards = data.get("rewards")  # (T, 12)
-        if rewards is None:
-            return
-
-        per_agent = rewards.float().mean(dim=0)  # (12,)
-        for hero_idx, hero_id in enumerate(HERO_IDS):
-            r = per_agent[hero_idx].item()
-            # EMA update
-            self.ema_reward[hero_id] = (
-                self.ema_alpha * r + (1 - self.ema_alpha) * self.ema_reward[hero_id]
-            )
-            # Check best (skip first 10 iterations for EMA warmup)
-            if self.iteration > 10 and self.ema_reward[hero_id] > self.best_reward[hero_id]:
-                self.best_reward[hero_id] = self.ema_reward[hero_id]
-                best_path = str(self.best_dir / f"best_{hero_id}.pt")
-                export_model(self.models[hero_id], best_path, device="cpu")
-                logger.info("New best %s: EMA=%.4f (iter %d)", hero_id, self.best_reward[hero_id], self.iteration)
-
     def _save_checkpoint(self, iteration: int):
-        """Save training checkpoint (per-hero models + optimizers + counters)."""
+        """Save training checkpoint (per-hero models + optimizers + adaptive state)."""
         path = self.save_dir / f"checkpoint_{iteration:06d}.pt"
         torch.save({
             "iteration": iteration,
@@ -422,11 +525,14 @@ class RolloutTrainer:
             "optimizer_states": {hid: o.state_dict() for hid, o in self.optimizers.items()},
             "ema_reward": self.ema_reward,
             "best_reward": self.best_reward,
+            "ent_coef": self.ent_coef,
+            "gamma": self.gamma,
+            "reward_history": list(self.reward_history),
         }, str(path))
         logger.info("Checkpoint saved: %s", path)
 
     def load_checkpoint(self, path: str):
-        """Load training checkpoint and resume state."""
+        """Load training checkpoint and resume state (including adaptive params)."""
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
 
         # Support both old single-model and new per-hero checkpoint formats
@@ -449,6 +555,14 @@ class RolloutTrainer:
             self.ema_reward.update(ckpt["ema_reward"])
         if "best_reward" in ckpt:
             self.best_reward.update(ckpt["best_reward"])
-        logger.info("Loaded checkpoint: %s (iter=%d)", path, self.iteration)
+
+        # Restore adaptive state
+        self.ent_coef = ckpt.get("ent_coef", self.ent_coef)
+        self.gamma = ckpt.get("gamma", self.gamma)
+        if "reward_history" in ckpt:
+            self.reward_history = deque(ckpt["reward_history"], maxlen=1000)
+
+        logger.info("Loaded checkpoint: %s (iter=%d, ent_coef=%.5f, gamma=%.5f)",
+                     path, self.iteration, self.ent_coef, self.gamma)
         # Re-export models so C++ picks up resumed weights
         self._export_model()

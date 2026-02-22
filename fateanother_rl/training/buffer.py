@@ -501,6 +501,50 @@ class TensorRolloutBuffer:
             self.T, self.num_agents, self.T * self.num_agents,
         )
 
+    @classmethod
+    def merge(cls, buffers: list["TensorRolloutBuffer"]) -> "TensorRolloutBuffer":
+        """Merge multiple TensorRolloutBuffers by concatenating along time axis.
+
+        Each buffer has shape (T_i, 12, ...). Result has (sum(T_i), 12, ...).
+        GAE must be recomputed after merging since episode boundaries differ.
+        """
+        merged = cls.__new__(cls)
+        merged.gamma = buffers[0].gamma
+        merged.lam = buffers[0].lam
+        merged.num_agents = buffers[0].num_agents
+
+        # Concat observations along time dimension
+        merged.obs = {}
+        for k in buffers[0].obs:
+            merged.obs[k] = torch.cat([b.obs[k] for b in buffers], dim=0)
+
+        # Concat scalar fields
+        merged.log_probs = torch.cat([b.log_probs for b in buffers], dim=0)
+        merged.values = torch.cat([b.values for b in buffers], dim=0)
+        merged.rewards = torch.cat([b.rewards for b in buffers], dim=0)
+        merged.dones = torch.cat([b.dones for b in buffers], dim=0)
+
+        # Concat LSTM states
+        merged.hx_h = torch.cat([b.hx_h for b in buffers], dim=0)
+        merged.hx_c = torch.cat([b.hx_c for b in buffers], dim=0)
+
+        # Concat masks and actions
+        merged.masks = {}
+        for k in buffers[0].masks:
+            merged.masks[k] = torch.cat([b.masks[k] for b in buffers], dim=0)
+
+        merged.actions = {}
+        for k in buffers[0].actions:
+            merged.actions[k] = torch.cat([b.actions[k] for b in buffers], dim=0)
+
+        merged.T = merged.log_probs.shape[0]
+        merged.advantages = None
+        merged.returns = None
+
+        logger.info("Merged %d buffers: total T=%d, agents=%d, transitions=%d",
+                    len(buffers), merged.T, merged.num_agents, merged.T * merged.num_agents)
+        return merged
+
     def slice_agent(self, agent_idx: int) -> "TensorRolloutBuffer":
         """Extract a single agent's data from (T, 12, ...) tensors.
 

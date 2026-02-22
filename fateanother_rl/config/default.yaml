@@ -13,17 +13,29 @@ ppo:
   gae_lambda: 0.95
   clip_eps: 0.2
   vf_coef: 0.5
-  ent_coef: 0.01
   max_grad_norm: 0.5
   ppo_epochs: 4
   batch_size: 4096
   seq_len: 16
 
+adaptive:
+  ent_coef_init: 0.01
+  ent_coef_min: 0.003
+  ent_coef_max: 0.02
+  ent_up: 1.01
+  ent_down: 0.995
+  plateau_window: 20
+  rollback_threshold: 0.30
+  gamma_init: 0.998
+  gamma_final: 0.9995
+  gamma_anneal_iters: 50000
+
 training:
   max_iterations: 100000
-  save_interval: 10
+  save_interval: 50
   log_interval: 1
   poll_interval: 1.0
+  sync_rollouts: 15
   save_dir: "checkpoints"
   log_dir: "runs"
   rollout_dir: "/data/rollouts"
