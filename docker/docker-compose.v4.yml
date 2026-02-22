@@ -25,7 +25,7 @@ x-gpu-deploy: &gpu-deploy
           capabilities: [gpu]
 
 x-inference: &inference
-  image: fate-gpu:latest
+  image: fateanother-gpu:latest
   entrypoint: ["/entrypoint.inference.sh"]
   environment:
     INFERENCE_PORT: "7777"
@@ -62,7 +62,7 @@ x-wc3-deploy: &wc3-deploy
 services:
   # ── Python Trainer (GPU, 학습만) ──
   trainer:
-    image: fate-gpu:latest
+    image: fateanother-gpu:latest
     container_name: fate-trainer
     entrypoint: ["/entrypoint.trainer.sh"]
     environment:
@@ -72,6 +72,7 @@ services:
       LOG_DIR: "/data/runs"
       FRESH_START: "${FRESH_START:-0}"
       RESUME: "${RESUME:-auto}"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     volumes:
       - data:/data
     deploy:
@@ -120,7 +121,7 @@ services:
 
   # ── WC3 Groups (3 replicas × 5 groups = 15 instances) ──
   wc3-g1:
-    image: docker-wc3:latest
+    image: fateanother-wc3:latest
     depends_on:
       - inference-1
     environment:
@@ -133,7 +134,7 @@ services:
       <<: *wc3-deploy
 
   wc3-g2:
-    image: docker-wc3:latest
+    image: fateanother-wc3:latest
     depends_on:
       - inference-2
     environment:
@@ -146,7 +147,7 @@ services:
       <<: *wc3-deploy
 
   wc3-g3:
-    image: docker-wc3:latest
+    image: fateanother-wc3:latest
     depends_on:
       - inference-3
     environment:
@@ -159,7 +160,7 @@ services:
       <<: *wc3-deploy
 
   wc3-g4:
-    image: docker-wc3:latest
+    image: fateanother-wc3:latest
     depends_on:
       - inference-4
     environment:
@@ -172,7 +173,7 @@ services:
       <<: *wc3-deploy
 
   wc3-g5:
-    image: docker-wc3:latest
+    image: fateanother-wc3:latest
     depends_on:
       - inference-5
     environment:
