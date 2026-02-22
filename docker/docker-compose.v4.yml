@@ -1,3 +1,5 @@
+name: fateanother
+
 # FateAnother RL v4 — Scaled Architecture (5 Inference Shards)
 #
 # 1 Trainer (Python/GPU)  → 모델 학습, model_latest.pt 갱신
