@@ -35,7 +35,7 @@ DISCRETE_HEADS = {
     "skill_levelup": 6,
     "stat_upgrade": 10,
     "attribute": 5,
-    "item_buy": 17,
+    "item_buy": 18,
     "item_use": 7,
     "seal_use": 7,
     "faire_send": 6,
@@ -50,4 +50,4 @@ SELF_DIM = 77    # hero_id(12) included
 ALLY_DIM = 37
 ENEMY_DIM = 43
 GLOBAL_DIM = 6
-GRID_CHANNELS = 3
+GRID_CHANNELS = 6  # path, ally, enemy_vis, portal, creep_pos, creep_hp

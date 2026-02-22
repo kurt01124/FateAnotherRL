@@ -18,7 +18,8 @@ bool parse_packet(const uint8_t* data, size_t len,
                   std::vector<Event>& events,
                   std::vector<uint8_t>& pathability,
                   std::vector<uint8_t>& vis_t0,
-                  std::vector<uint8_t>& vis_t1)
+                  std::vector<uint8_t>& vis_t1,
+                  std::vector<CreepState>& creeps)
 {
     // Minimum size: fixed portion
     constexpr size_t FIXED_SIZE = sizeof(StatePacketFixed);
@@ -103,6 +104,21 @@ bool parse_packet(const uint8_t* data, size_t len,
     }
     vis_t1.assign(data + offset, data + offset + GRID_CELLS);
     offset += GRID_CELLS;
+
+    // Parse creep data (optional, for backwards compatibility)
+    creeps.clear();
+    if (offset + 1 <= len) {
+        uint8_t num_creeps = data[offset++];
+        if (num_creeps > MAX_CREEPS) num_creeps = MAX_CREEPS;
+        size_t creeps_size = num_creeps * sizeof(CreepState);
+        if (offset + creeps_size <= len) {
+            creeps.resize(num_creeps);
+            if (num_creeps > 0) {
+                std::memcpy(creeps.data(), data + offset, creeps_size);
+            }
+            offset += creeps_size;
+        }
+    }
 
     return true;
 }
@@ -396,7 +412,36 @@ static void encode_global(const GlobalState& g, int my_team, float* out) {
 }
 
 // ============================================================
-// Encode grid -> (3, GRID_H, GRID_W) float
+// Portal definitions (entrance <-> exit, bidirectional)
+// ============================================================
+struct PortalDef {
+    float x, y;     // center of entrance rect
+    float ex, ey;   // center of exit rect
+};
+static const PortalDef PORTALS[] = {
+    // Fuyuki <-> Ryudou Temple
+    {-7328.f, 2128.f,  -2048.f, 7296.f},
+    // Fuyuki <-> Tohsaka Mansion
+    {-2288.f, -512.f,  -8000.f, -5376.f},
+    // Fuyuki <-> Matou Mansion
+    {-2800.f, -208.f,  -3328.f, -8256.f},
+    // Fuyuki <-> Einzbern Castle
+    {-6816.f, -1568.f,  6288.f, -6208.f},
+    // Fuyuki <-> Emiya Mansion
+    {-5920.f, 4800.f,  -6912.f, 7488.f},
+    // Fuyuki <-> School
+    {-3856.f, 1152.f,   3072.f, 7360.f},
+    // Fuyuki <-> Church
+    { 6816.f,  -80.f,   7232.f, 9984.f},
+    // Internal warp
+    { 2576.f, 5031.f,   2125.f, 5155.f},
+};
+static constexpr int NUM_PORTALS = sizeof(PORTALS) / sizeof(PORTALS[0]);
+
+// ============================================================
+// Encode grid -> (6, GRID_H, GRID_W) float
+// ch0: pathability, ch1: ally, ch2: visible enemy,
+// ch3: portal, ch4: creep position, ch5: creep HP (visible only)
 // ============================================================
 static void encode_grid(int my_team,
                         int observer_pid,
@@ -404,10 +449,11 @@ static void encode_grid(int my_team,
                         const std::vector<uint8_t>& pathability,
                         const std::vector<uint8_t>& vis_t0,
                         const std::vector<uint8_t>& vis_t1,
+                        const std::vector<CreepState>& creeps,
                         float* out)
 {
     const int plane_size = OBS_GRID_H * OBS_GRID_W;  // 1200
-    std::memset(out, 0, 3 * plane_size * sizeof(float));
+    std::memset(out, 0, GRID_CHANNELS * plane_size * sizeof(float));
 
     // Channel 0: pathability / 2.0
     if (!pathability.empty() && static_cast<int>(pathability.size()) == plane_size) {
@@ -436,6 +482,39 @@ static void encode_grid(int my_team,
             }
         }
     }
+
+    // Channel 3: portal locations (static, both entrance and exit)
+    float* ch3 = out + 3 * plane_size;
+    for (int p = 0; p < NUM_PORTALS; ++p) {
+        auto [gx1, gy1] = world_to_grid(PORTALS[p].x, PORTALS[p].y);
+        ch3[gy1 * OBS_GRID_W + gx1] = 1.0f;
+        auto [gx2, gy2] = world_to_grid(PORTALS[p].ex, PORTALS[p].ey);
+        ch3[gy2 * OBS_GRID_W + gx2] = 1.0f;
+    }
+
+    // Channel 4: creep positions (always visible), Channel 5: creep HP (visible only)
+    float* ch4 = out + 4 * plane_size;
+    float* ch5 = out + 5 * plane_size;
+
+    // Use observer's team visibility grid to check creep visibility
+    const auto& vis_grid = (my_team == 0) ? vis_t0 : vis_t1;
+
+    for (size_t c = 0; c < creeps.size(); ++c) {
+        if (creeps[c].max_hp <= 0.0f) continue;  // skip invalid
+        float hp_ratio = creeps[c].hp / creeps[c].max_hp;
+        if (hp_ratio <= 0.0f) continue;  // dead creep
+
+        auto [gx, gy] = world_to_grid(creeps[c].x, creeps[c].y);
+        int cell = gy * OBS_GRID_W + gx;
+
+        // Always mark position
+        ch4[cell] = 1.0f;
+
+        // HP only if observer's team has visibility of that cell
+        if (!vis_grid.empty() && vis_grid[cell]) {
+            ch5[cell] = hp_ratio;
+        }
+    }
 }
 
 // ============================================================
@@ -446,7 +525,8 @@ EncodedObs encode(const UnitState units[MAX_UNITS],
                   const GlobalState& global,
                   const std::vector<uint8_t>& pathability,
                   const std::vector<uint8_t>& vis_t0,
-                  const std::vector<uint8_t>& vis_t1)
+                  const std::vector<uint8_t>& vis_t1,
+                  const std::vector<CreepState>& creeps)
 {
     EncodedObs obs;
 
@@ -521,7 +601,7 @@ EncodedObs encode(const UnitState units[MAX_UNITS],
 
         // Grid (per-observer perspective)
         float* grid_ptr = obs.grid[i].data_ptr<float>();
-        encode_grid(team, i, units, pathability, vis_t0, vis_t1, grid_ptr);
+        encode_grid(team, i, units, pathability, vis_t0, vis_t1, creeps, grid_ptr);
     }
 
     return obs;
@@ -600,10 +680,10 @@ MaskSet encode_masks(const UnitState units[MAX_UNITS],
                 acc[i][b] = mask_bit(u.mask_attribute, b);
         }
 
-        // item_buy: 17 bits from mask_item_buy (32-bit field)
+        // item_buy: 18 bits from mask_item_buy (32-bit field)
         {
             auto acc = ms.masks["item_buy"].accessor<bool, 2>();
-            for (int b = 0; b < 17; ++b)
+            for (int b = 0; b < 18; ++b)
                 acc[i][b] = mask_bit32(u.mask_item_buy, b);
         }
 

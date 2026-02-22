@@ -61,7 +61,7 @@ constexpr int SELF_DIM      = 77;
 constexpr int ALLY_DIM      = 37;
 constexpr int ENEMY_DIM     = 43;
 constexpr int GLOBAL_DIM    = 6;
-constexpr int GRID_CHANNELS = 3;
+constexpr int GRID_CHANNELS = 6;   // path, ally, enemy_vis, portal, creep_pos, creep_hp
 constexpr int OBS_GRID_H    = 25;
 constexpr int OBS_GRID_W    = 48;
 constexpr int HIDDEN_DIM    = 256;
@@ -83,7 +83,7 @@ inline const std::array<DiscreteHead, NUM_DISCRETE_HEADS>& discrete_heads() {
         {"skill_levelup",  6},
         {"stat_upgrade",  10},
         {"attribute",      5},
-        {"item_buy",      17},
+        {"item_buy",      18},
         {"item_use",       7},
         {"seal_use",       7},
         {"faire_send",     6},
@@ -114,15 +114,15 @@ namespace RewardDefaults {
     // --- Event rewards (raw, before zero-sum/team-spirit) ---
     constexpr float kill_personal    =  3.0f;    // kill bonus (stacks with damage reward)
     constexpr float death            = -1.0f;    // OpenAI Five: -1.0
-    constexpr float creep            =  0.16f;   // OpenAI Five last-hit: 0.16
+    constexpr float creep            =  0.5f;    // increased from 0.16 to incentivize hunting
     constexpr float levelup          =  0.5f;
     constexpr float friendly_kill    = -3.0f;    // punish team kills heavily
     constexpr float score_point      =  2.0f;    // team scored a point (70 to win)
     constexpr float damage_ratio     =  3.0f;    // enemy maxHP 100% dealt = 3.0 reward
     constexpr float heal_ratio       =  1.0f;    // self maxHP 100% healed = 1.0 reward
-    constexpr float alarm_proximity  =  0.1f;    // per-tick max (closest to enemy)
-    constexpr float alarm_duration   = 10.0f;    // seconds after alarm triggers
-
+    constexpr float portal_use       =  0.05f;   // small reward for using portals
+    constexpr float portal_decay     =  0.995f;  // per-use decay: after ~500 uses ≈ 0
+    constexpr int   creep_level_cap  =  12;       // no creep reward above this level
     // --- Per-tick ---
     constexpr float skill_points_held = -0.02f;
     constexpr float idle_penalty     = -0.003f;  // reduced from -0.01

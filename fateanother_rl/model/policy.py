@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical, Normal
 
-from fateanother_rl.data.constants import DISCRETE_HEADS
+from fateanother_rl.data.constants import DISCRETE_HEADS, GRID_CHANNELS
 from fateanother_rl.model.encoder import SelfEncoder, UnitEncoder, GridEncoder
 from fateanother_rl.model.action_utils import apply_mask
 
@@ -31,7 +31,7 @@ class FateModel(nn.Module):
         ally_dim: int = 37,
         enemy_dim: int = 43,
         global_dim: int = 6,
-        grid_channels: int = 3,
+        grid_channels: int = GRID_CHANNELS,
         hidden_dim: int = 256,
         encoder_dim: int = 128,
     ):

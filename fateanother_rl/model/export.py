@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from typing import Tuple
 
 from fateanother_rl.model.encoder import SelfEncoder, UnitEncoder, GridEncoder
+from fateanother_rl.data.constants import GRID_CHANNELS
 
 
 class FateModelExport(nn.Module):
@@ -28,7 +29,7 @@ class FateModelExport(nn.Module):
         ally_vec:              (B, N_ally, 37)
         enemy_vec:             (B, N_enemy, 43)
         global_vec:            (B, 6)
-        grid:                  (B, 3, H, W)
+        grid:                  (B, 6, H, W)
         hx_h:                  (1, B, 256)
         hx_c:                  (1, B, 256)
         mask_*:                (B, head_size) bool tensors
@@ -39,7 +40,7 @@ class FateModelExport(nn.Module):
         skill_levelup_logits   (B, 6)
         stat_upgrade_logits    (B, 10)
         attribute_logits       (B, 5)
-        item_buy_logits        (B, 17)
+        item_buy_logits        (B, 18)
         item_use_logits        (B, 7)
         seal_use_logits        (B, 7)
         faire_send_logits      (B, 6)
@@ -60,7 +61,7 @@ class FateModelExport(nn.Module):
         ally_dim: int = 37,
         enemy_dim: int = 43,
         global_dim: int = 6,
-        grid_channels: int = 3,
+        grid_channels: int = GRID_CHANNELS,
         hidden_dim: int = 256,
         encoder_dim: int = 128,
     ):
@@ -85,7 +86,7 @@ class FateModelExport(nn.Module):
         self.head_skill_levelup = nn.Linear(hidden_dim, 6)
         self.head_stat_upgrade = nn.Linear(hidden_dim, 10)
         self.head_attribute = nn.Linear(hidden_dim, 5)
-        self.head_item_buy = nn.Linear(hidden_dim, 17)
+        self.head_item_buy = nn.Linear(hidden_dim, 18)
         self.head_item_use = nn.Linear(hidden_dim, 7)
         self.head_seal_use = nn.Linear(hidden_dim, 7)
         self.head_faire_send = nn.Linear(hidden_dim, 6)

@@ -128,7 +128,7 @@ struct UnitState {
     uint8_t  mask_skill_levelup;    // 8 bits  (indices 0-5, 2 spare)
     uint16_t mask_stat_upgrade;     // 16 bits (indices 0-9, 6 spare)
     uint8_t  mask_attribute;        // 8 bits  (indices 0-4, 3 spare)
-    uint32_t mask_item_buy;         // 32 bits (indices 0-16, 17 used)
+    uint32_t mask_item_buy;         // 32 bits (indices 0-17, 18 used)
     uint8_t  mask_item_use;         // 8 bits  (indices 0-6, 1 spare)
     uint8_t  mask_seal_use;         // 8 bits  (indices 0-6, 1 spare)
     uint8_t  mask_faire_send;       // 8 bits  (indices 0-5, 2 spare)
@@ -143,6 +143,7 @@ enum EventType : uint8_t {
     EVT_KILL       = 1,
     EVT_CREEP_KILL = 2,
     EVT_LEVEL_UP   = 3,
+    EVT_PORTAL     = 4,   // hero entered a portal
 };
 
 struct Event {
@@ -172,10 +173,22 @@ struct GlobalState {
 static_assert(sizeof(GlobalState) == 28, "GlobalState must be 28 bytes");
 
 // ============================================================
+// Creep State (16 bytes)
+// ============================================================
+struct CreepState {
+    float    x;
+    float    y;
+    float    hp;
+    float    max_hp;
+};
+static_assert(sizeof(CreepState) == 16, "CreepState must be 16 bytes");
+
+// ============================================================
 // State Packet (variable length)
 // ============================================================
 constexpr int MAX_UNITS   = 12;
 constexpr int MAX_EVENTS  = 32;
+constexpr int MAX_CREEPS  = 70;
 constexpr int GRID_W      = 48;
 constexpr int GRID_H      = 25;
 constexpr int GRID_CELLS  = GRID_W * GRID_H;  // 1200
@@ -194,6 +207,8 @@ struct StatePacketFixed {
 //   + (if has_pathability) uint8_t pathability[1200]
 //   + uint8_t visibility_t0[1200]
 //   + uint8_t visibility_t1[1200]
+//   + uint8_t num_creeps
+//   + CreepState creeps[num_creeps]
 
 // ============================================================
 // Unit Action (28 bytes)
@@ -210,7 +225,7 @@ struct UnitAction {
     uint8_t  skill_levelup;     // 0-5
     uint8_t  stat_upgrade;      // 0-9
     uint8_t  attribute;         // 0-4
-    uint8_t  item_buy;          // 0-16
+    uint8_t  item_buy;          // 0-17
     uint8_t  item_use;          // 0-6
     uint8_t  seal_use;          // 0-6
     uint8_t  faire_send;        // 0-5

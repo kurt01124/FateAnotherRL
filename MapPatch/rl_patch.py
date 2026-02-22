@@ -570,6 +570,44 @@ call DestroyTimer(GetExpiredTimer())
 call ModeCircleInit___GameStart(null)
 call DisplayTimedTextToPlayer(GetLocalPlayer(),0,0,10,"[RL] GameStart fired - waiting for heroes...")
 endfunction
+function RL_PortalEnter takes nothing returns nothing
+local unit u=GetTriggerUnit()
+local integer pid=GetPlayerId(GetOwningPlayer(u))
+if pid>=0 and pid<12 then
+call Preloader("RL_PORTAL|"+I2S(pid))
+endif
+set u=null
+endfunction
+function RL_SetupPortals takes nothing returns nothing
+local trigger t=CreateTrigger()
+local region r
+call TriggerAddAction(t,function RL_PortalEnter)
+set r=CreateRegion()
+call RegionAddRect(r,Rect(-7528,1928,-7128,2328))
+call TriggerRegisterEnterRegion(t,r,null)
+set r=CreateRegion()
+call RegionAddRect(r,Rect(-2488,-712,-2088,-312))
+call TriggerRegisterEnterRegion(t,r,null)
+set r=CreateRegion()
+call RegionAddRect(r,Rect(-3000,-408,-2600,-8))
+call TriggerRegisterEnterRegion(t,r,null)
+set r=CreateRegion()
+call RegionAddRect(r,Rect(-7016,-1768,-6616,-1368))
+call TriggerRegisterEnterRegion(t,r,null)
+set r=CreateRegion()
+call RegionAddRect(r,Rect(-6120,4600,-5720,5000))
+call TriggerRegisterEnterRegion(t,r,null)
+set r=CreateRegion()
+call RegionAddRect(r,Rect(-4056,952,-3656,1352))
+call TriggerRegisterEnterRegion(t,r,null)
+set r=CreateRegion()
+call RegionAddRect(r,Rect(6616,-280,7016,120))
+call TriggerRegisterEnterRegion(t,r,null)
+set r=CreateRegion()
+call RegionAddRect(r,Rect(2376,4831,2776,5231))
+call TriggerRegisterEnterRegion(t,r,null)
+set t=null
+endfunction
 function RL_Init takes nothing returns nothing
 call Preloader("RL_PING")
 set Playing[0]=true
@@ -615,6 +653,7 @@ set rl_spawn_rx[4]=2444.0
 set rl_spawn_ry[4]=3839.0
 set rl_spawn_rx[5]=8072.0
 set rl_spawn_ry[5]=1837.0
+call RL_SetupPortals()
 call DisplayTimedTextToPlayer(GetLocalPlayer(),0,0,10,"[RL] ARENA/RANDOM/70kill 12P - event-driven init")
 call TimerStart(CreateTimer(),0.1,false,function RL_ForceStart)
 call TimerStart(CreateTimer(),0.5,true,function RL_WaitReady)
@@ -635,6 +674,24 @@ call RL_Init()"""
 assert old_initstructs in j_data, "jasshelper initstructs not found"
 j_data = j_data.replace(old_initstructs, new_initstructs, 1)
 print("Patch RL-7: RL_Init hook in main OK")
+
+# ============================================================
+# Patch RL-7b: Disable map's custom AI for all heroes
+# The map has built-in AI (AvengerAI, BerserkerAI, CasterAI, etc.)
+# that issues commands via timers, conflicting with RL agent control.
+# Remove all ExecuteFunc("*AI___Init") calls.
+# ============================================================
+ai_names = [
+    b"AvengerAI", b"BerserkerAI", b"CasterAI", b"FakeAssassinAI",
+    b"GilgameshAI", b"RiderAI", b"SaberalterAI", b"TrueAssassinAI",
+]
+ai_count = 0
+for ai in ai_names:
+    old_call = b'call ExecuteFunc("' + ai + b'___Init")'
+    if old_call in j_data:
+        j_data = j_data.replace(old_call, b'// RL: disabled ' + ai, 1)
+        ai_count += 1
+print(f"Patch RL-7b: Disabled {ai_count} custom AI inits OK")
 
 # ============================================================
 # Patch RL-8: Hook hero creation to set rl_hero1/rl_hero2

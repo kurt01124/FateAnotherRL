@@ -314,10 +314,12 @@ int main(int argc, char* argv[]) {
             UnitState units[MAX_UNITS];
             std::vector<Event> events;
             std::vector<uint8_t> pathability, vis_t0, vis_t1;
+            std::vector<CreepState> creeps;
 
             if (!state_encoder::parse_packet(raw_data.data(), raw_data.size(),
                                              header, global, units,
-                                             events, pathability, vis_t0, vis_t1)) {
+                                             events, pathability, vis_t0, vis_t1,
+                                             creeps)) {
                 std::cerr << "[main] Failed to parse STATE from " << addr << std::endl;
                 continue;
             }
@@ -344,7 +346,7 @@ int main(int argc, char* argv[]) {
 
             // Encode state -> tensors (with distance-sorted enemies)
             std::cerr << "[main] Encoding state..." << std::endl;
-            EncodedObs obs = state_encoder::encode(units, global, pathability, vis_t0, vis_t1);
+            EncodedObs obs = state_encoder::encode(units, global, pathability, vis_t0, vis_t1, creeps);
             MaskSet masks = state_encoder::encode_masks(units, &obs.sort_map);
 
             // Compute rewards (from previous state to current)

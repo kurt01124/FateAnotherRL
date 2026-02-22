@@ -15,7 +15,7 @@ RewardCalc::RewardCalc()
 {
     std::memset(prev_x_, 0, sizeof(prev_x_));
     std::memset(prev_y_, 0, sizeof(prev_y_));
-    std::memset(alarm_timer_, 0, sizeof(alarm_timer_));
+    std::memset(portal_count_, 0, sizeof(portal_count_));
 }
 
 // ============================================================
@@ -27,7 +27,6 @@ void RewardCalc::reset() {
     prev_game_time_ = 0.0f;
     std::memset(prev_x_, 0, sizeof(prev_x_));
     std::memset(prev_y_, 0, sizeof(prev_y_));
-    std::memset(alarm_timer_, 0, sizeof(alarm_timer_));
 }
 
 // ============================================================
@@ -118,7 +117,8 @@ std::array<float, MAX_UNITS> RewardCalc::compute(
         }
         case EVT_CREEP_KILL: {
             int killer = ev.killer_idx;
-            if (killer >= 0 && killer < MAX_UNITS) {
+            if (killer >= 0 && killer < MAX_UNITS
+                && units[killer].level < RewardDefaults::creep_level_cap) {
                 rewards[killer] += RewardDefaults::creep;
             }
             break;
@@ -127,6 +127,15 @@ std::array<float, MAX_UNITS> RewardCalc::compute(
             int unit_idx = ev.killer_idx;
             if (unit_idx >= 0 && unit_idx < MAX_UNITS) {
                 rewards[unit_idx] += RewardDefaults::levelup;
+            }
+            break;
+        }
+        case EVT_PORTAL: {
+            int unit_idx = ev.killer_idx;
+            if (unit_idx >= 0 && unit_idx < MAX_UNITS) {
+                float factor = std::pow(RewardDefaults::portal_decay, portal_count_[unit_idx]);
+                rewards[unit_idx] += RewardDefaults::portal_use * factor;
+                portal_count_[unit_idx] += 1.0f;
             }
             break;
         }
@@ -179,10 +188,6 @@ std::array<float, MAX_UNITS> RewardCalc::compute(
     }
 
     // ---- 3. Per-tick penalties ----
-    float tick_dt = 0.0f;
-    if (prev_game_time_ > 0.0f)
-        tick_dt = global.game_time - prev_game_time_;
-
     for (int i = 0; i < MAX_UNITS; ++i) {
         if (!units[i].alive) continue;
 
@@ -227,32 +232,6 @@ std::array<float, MAX_UNITS> RewardCalc::compute(
         int sp = units[i].skill_points;
         if (sp > 0) {
             rewards[i] += RewardDefaults::skill_points_held * static_cast<float>(sp);
-        }
-
-        // Alarm proximity reward
-        if (units[i].enemy_alarm && alarm_timer_[i] <= 0.0f) {
-            alarm_timer_[i] = RewardDefaults::alarm_duration;
-        }
-
-        if (alarm_timer_[i] > 0.0f) {
-            int my_team = (i < 6) ? 0 : 1;
-            int en_base = (1 - my_team) * 6;
-            float min_dist = 99999.f;
-            for (int e = 0; e < 6; ++e) {
-                int eidx = en_base + e;
-                if (!units[eidx].alive) continue;
-                float edx = units[i].x - units[eidx].x;
-                float edy = units[i].y - units[eidx].y;
-                float d = std::sqrt(edx * edx + edy * edy);
-                if (d < min_dist) min_dist = d;
-            }
-
-            if (min_dist < 1500.f) {
-                float proximity = 1.0f - (min_dist / 1500.f);
-                rewards[i] += RewardDefaults::alarm_proximity * proximity;
-            }
-
-            alarm_timer_[i] -= (tick_dt > 0.0f) ? tick_dt : 0.1f;
         }
     }
     has_prev_pos_ = true;

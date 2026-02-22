@@ -34,8 +34,8 @@ private:
     float prev_y_[MAX_UNITS];
     bool has_prev_pos_;
 
-    float alarm_timer_[MAX_UNITS];   // seconds remaining after alarm trigger
     float prev_game_time_;           // for computing tick interval
+    float portal_count_[MAX_UNITS];  // cumulative portal uses (NOT reset per episode)
 
     /// Apply team spirit: blend individual and team average
     void apply_team_spirit(std::array<float, MAX_UNITS>& rewards, float tau);

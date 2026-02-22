@@ -27,7 +27,7 @@ struct EncodedObs {
     torch::Tensor ally_vec;    // (12, 5, 37) float
     torch::Tensor enemy_vec;   // (12, 6, 43) float
     torch::Tensor global_vec;  // (12, 6) float
-    torch::Tensor grid;        // (12, 3, 25, 48) float
+    torch::Tensor grid;        // (12, 6, 25, 48) float
     EnemySortMapping sort_map; // enemy slot mapping for action remapping
 };
 
@@ -53,7 +53,8 @@ namespace state_encoder {
                       std::vector<Event>& events,
                       std::vector<uint8_t>& pathability,
                       std::vector<uint8_t>& vis_t0,
-                      std::vector<uint8_t>& vis_t1);
+                      std::vector<uint8_t>& vis_t1,
+                      std::vector<CreepState>& creeps);
 
     /// Encode parsed state into per-agent observation tensors (12 perspectives).
     /// Also fills sort_map for enemy distance-sorted action remapping.
@@ -61,7 +62,8 @@ namespace state_encoder {
                       const GlobalState& global,
                       const std::vector<uint8_t>& pathability,
                       const std::vector<uint8_t>& vis_t0,
-                      const std::vector<uint8_t>& vis_t1);
+                      const std::vector<uint8_t>& vis_t1,
+                      const std::vector<CreepState>& creeps);
 
     /// Extract action masks from unit state bit-packed fields.
     /// If sort_map is provided, remap unit_target mask bits 6-11 (enemies)

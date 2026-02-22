@@ -36,6 +36,18 @@ namespace RLComm
         private const int HELLO_VERSION = 5;
         private const int FAIRE_TRANSFER_AMOUNT = 500;
         private const int FAIRE_CAP = 18000;
+
+        // ---- Local Player Slot Override ----
+        // Set to desired player slot (0-11) to play as that hero, or -1 to disable
+        // Player 7 = FakeAssassin (H005), Player 0 = Saber (H000), etc.
+        private const int LOCAL_PLAYER_SLOT_OVERRIDE = -1;
+        // Game.dll CGameWar3 global pointer offset from Game.dll base
+        // DAT_6fd305e0 with base 0x6f000000 → offset 0xd305e0
+        private const int GAME_WAR3_PTR_OFFSET = 0xd305e0;
+        // localPlayerId field offset within CGameWar3 struct
+        private const int LOCAL_PLAYER_ID_OFFSET = 0x28;
+        // backup field (used by replay restore)
+        private const int LOCAL_PLAYER_ID_BACKUP_OFFSET = 0x2a;
         private static readonly int[] STAT_UPGRADE_CAPS = { 50, 50, 50, 50, 50, 5, 50, 50, 50 };
 
         // ============================================================
@@ -78,6 +90,13 @@ namespace RLComm
         // Pathability grid (cached once on first tick)
         private static int[] _pathabilityGrid;
         private static bool _pathabilityComputed;
+
+        // Creep tracking
+        private const int MAX_CREEPS = 70;
+        private static readonly int CREEP_TYPE_H043 = FourCC("h043");
+        private static readonly int CREEP_TYPE_H044 = FourCC("h044");
+        private static readonly int CREEP_TYPE_H045 = FourCC("h045");
+        private static JassGroup _creepGroup;  // reusable group for enumeration
 
         // ============================================================
         // Reusable static buffers (avoid per-tick allocations)
@@ -184,6 +203,7 @@ namespace RLComm
             }
         }
         private static CooldownTracker _cdTracker = new CooldownTracker();
+        private static int[] _maskDebugCount = new int[MAX_PLAYERS];
 
         // ============================================================
         // EventQueue (binary-friendly)
@@ -227,6 +247,12 @@ namespace RLComm
                     be.type = 3;
                     be.killerIdx = (byte)evt.Value<int>("unit_idx");
                     be.victimIdx = (byte)evt.Value<int>("new_level");
+                }
+                else if (evtType == "PORTAL")
+                {
+                    be.type = 4;
+                    be.killerIdx = (byte)evt.Value<int>("unit_idx");
+                    be.victimIdx = 0;
                 }
 
                 _queue.Add(be);
@@ -1203,6 +1229,55 @@ namespace RLComm
         }
 
         /// <summary>
+        /// Override local player slot by patching CGameWar3.localPlayerId in Game.dll memory.
+        /// This allows the human player to control any player slot (0-11) in single-player.
+        /// </summary>
+        private static void PatchLocalPlayerSlot(int desiredSlot)
+        {
+            if (desiredSlot < 0 || desiredSlot >= MAX_PLAYERS) return;
+            try
+            {
+                IntPtr gameDll = Kernel32.GetModuleHandleA("game.dll");
+                if (gameDll == IntPtr.Zero)
+                {
+                    Log("[RLComm] PatchLocalPlayer: Game.dll not found");
+                    return;
+                }
+
+                // Read the CGameWar3 global pointer
+                IntPtr ptrAddr = gameDll + GAME_WAR3_PTR_OFFSET;
+                IntPtr gameWar3 = Marshal.ReadIntPtr(ptrAddr);
+                if (gameWar3 == IntPtr.Zero)
+                {
+                    Log("[RLComm] PatchLocalPlayer: CGameWar3 ptr is null");
+                    return;
+                }
+
+                // Read current localPlayerId
+                short currentSlot = Marshal.ReadInt16(gameWar3 + LOCAL_PLAYER_ID_OFFSET);
+                Log($"[RLComm] PatchLocalPlayer: current={currentSlot}, desired={desiredSlot}");
+
+                if (currentSlot == (short)desiredSlot)
+                {
+                    Log("[RLComm] PatchLocalPlayer: already correct, skipping");
+                    return;
+                }
+
+                // Write desired slot to localPlayerId (+0x28) and backup (+0x2a)
+                Marshal.WriteInt16(gameWar3 + LOCAL_PLAYER_ID_OFFSET, (short)desiredSlot);
+                Marshal.WriteInt16(gameWar3 + LOCAL_PLAYER_ID_BACKUP_OFFSET, (short)desiredSlot);
+
+                // Verify
+                short verify = Marshal.ReadInt16(gameWar3 + LOCAL_PLAYER_ID_OFFSET);
+                Log($"[RLComm] PatchLocalPlayer: wrote slot {desiredSlot}, verify={verify}");
+            }
+            catch (Exception ex)
+            {
+                Log($"[RLComm] PatchLocalPlayer error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Patch Storm.dll SyncDelay to minimum (10ms) for maximum simulation speed.
         /// </summary>
         private static void ApplySyncDelay(int delayMs)
@@ -1412,11 +1487,11 @@ namespace RLComm
                 mainStat = 1, attributeCost = new int[] { 6, 16, 11, 12 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A01L", "chemicalrage", 0, sharedCdGroup: 1),  // Q 문지기 Gatekeeper (ANcr, imm/self-buff) shared CD
-                    MakeSkill("A05D", "battleroar", 0, sharedCdGroup: 1),   // W 소화의소양 Knowledge (ANbr, imm/self-buff) shared CD
-                    MakeSkill("A01O", "thunderclap", 0, sharedCdGroup: 1),  // E 섬풍 Windblade (AHtc, imm/self-AOE) shared CD
-                    MakeSkill("A01P", "fingerofdeath", 1, learnAbilIdStr: "A04X", sharedCdGroup: 1), // R 츠바메가에시 TsubameGaeshi (ANfd, unit; learn=A04X proxy) shared CD
-                    MakeSkill("A011", "bloodlustoff", 2),       // D 발도 QuickDraw (ANcl Ncl6=bloodlustoff, point; 4차속성)
+                    MakeSkill("A01L", "chemicalrage", 0, manaCost: new int[]{0,0,0,0,0}, sharedCdGroup: 1),  // Q 문지기 Gatekeeper (ANcr, imm/self-buff) shared CD
+                    MakeSkill("A05D", "battleroar", 0, manaCost: new int[]{0,0,0,0,0}, sharedCdGroup: 1),   // W 소화의소양 Knowledge (ANbr, imm/self-buff) shared CD
+                    MakeSkill("A01O", "thunderclap", 0, manaCost: new int[]{0,0,0,0,0}, sharedCdGroup: 1),  // E 섬풍 Windblade (AHtc, imm/self-AOE) shared CD
+                    MakeSkill("A01P", "fingerofdeath", 1, manaCost: new int[]{0,0,0,0,0}, learnAbilIdStr: "A04X", sharedCdGroup: 1), // R 츠바메가에시 TsubameGaeshi (ANfd, unit; learn=A04X proxy) shared CD
+                    MakeSkill("A011", "bloodlustoff", 2, manaCost: new int[]{0,0,0,0,0}),       // D 발도 QuickDraw (ANcl Ncl6=bloodlustoff, point; 4차속성)
                     EmptySkill(),                                // F (none)
                 }
             };
@@ -1556,8 +1631,8 @@ namespace RLComm
         // ============================================================
         // Shop Items Table
         // ============================================================
-        // item_buy indices: 0=none, 1-6=faire (기사회생) options, 7-16=gold shop items
-        // Total: 17 indices → uint32 mask (was ushort/16)
+        // item_buy indices: 0=none, 1-6=faire (기사회생) options, 7-17=gold shop items
+        // Total: 18 indices → uint32 mask
         private struct ShopItem
         {
             public string typeId;
@@ -1583,6 +1658,7 @@ namespace RLComm
             new ShopItem { typeId = "I003", cost = 800  },  // 14: 결계 주문서
             new ShopItem { typeId = "I011", cost = 1500 },  // 15: 네비게이션
             new ShopItem { typeId = "I00M", cost = 1500 },  // 16: 단체 워프 포탈
+            new ShopItem { typeId = "I000", cost = 150  },  // 17: C랭크 마술주문서
         };
 
         // ============================================================
@@ -1938,6 +2014,21 @@ namespace RLComm
                         });
                     }
                 }
+                else if (cmd.StartsWith("RL_PORTAL|"))
+                {
+                    // Format: "RL_PORTAL|pid"
+                    string[] parts = cmd.Split('|');
+                    if (parts.Length >= 2)
+                    {
+                        int pid = int.Parse(parts[1]);
+                        _eventQueue.Add(new JObject
+                        {
+                            ["type"] = "PORTAL",
+                            ["unit_idx"] = pid,
+                            ["tick"] = tickCount
+                        });
+                    }
+                }
                 else if (cmd.StartsWith("RL_ALARM|"))
                 {
                     // Format: "RL_ALARM|pid"
@@ -2020,6 +2111,11 @@ namespace RLComm
                     if (_speedMultiplier > 1.0)
                     {
                         ApplySyncDelay(10);
+                    }
+                    // Override local player slot if configured
+                    if (LOCAL_PLAYER_SLOT_OVERRIDE >= 0)
+                    {
+                        PatchLocalPlayerSlot(LOCAL_PLAYER_SLOT_OVERRIDE);
                     }
                     Log($"[RLComm] RL initialized ({heroCount} heroes, speed={_speedMultiplier}x)");
                 }
@@ -2761,6 +2857,7 @@ namespace RLComm
             HeroData hdata;
             bool hasData = _heroDataTable.TryGetValue(typeId, out hdata);
 
+            string _dbgSkillMask = "";
             for (int s = 0; s < 6; s++) // Q,W,E,R,D,F
             {
                 bool canUse = false;
@@ -2778,8 +2875,16 @@ namespace RLComm
                             manaCost = si.manaCost[abilLevel - 1];
                         canUse = cdRemain <= 0f && mp >= manaCost;
                     }
+                    _dbgSkillMask += $" {s}:lv{abilLevel}/mc{(abilLevel > 0 && abilLevel <= si.manaCost.Length ? si.manaCost[abilLevel-1] : 0)}/{(canUse?"Y":"N")}";
                 }
                 skillMask.Add(canUse);
+            }
+            // Periodic skill mask debug log (every ~200 calls per hero)
+            if (hasData && _maskDebugCount[heroIdx]++ % 200 == 0)
+            {
+                float maxMp = 0;
+                try { maxMp = Natives.GetUnitState(u, JassUnitState.MaxMana); } catch {}
+                Log($"[SkillMask] P{heroIdx} {hdata.heroId} mp={mp:F0}/{maxMp:F0} lv={heroLevel}{_dbgSkillMask}");
             }
 
             // ---- Unit target mask (size 14): 0-5=ally, 6-11=enemy, 12=self, 13=point_mode ----
@@ -2875,7 +2980,7 @@ namespace RLComm
                 attrMask.Add(canAcquire);
             }
 
-            // ---- Item buy mask (size 17): 0=none, 1-6=faire options, 7-16=items ----
+            // ---- Item buy mask (size 18): 0=none, 1-6=faire options, 7-17=items ----
             bool hasSlot = HasEmptyItemSlot(u);
             var itemBuyMask = new JArray();
             itemBuyMask.Add(true); // 0=none
@@ -2885,7 +2990,7 @@ namespace RLComm
             {
                 itemBuyMask.Add(faireAvailable && hasSlot);
             }
-            for (int bi = 7; bi <= 16; bi++)
+            for (int bi = 7; bi <= 17; bi++)
             {
                 bool canBuy = hasSlot && bi < _shopItems.Length && gold >= _shopItems[bi].cost;
                 itemBuyMask.Add(canBuy);
@@ -3173,7 +3278,7 @@ namespace RLComm
                 if (canAcquire) result.attribute |= (byte)(1 << (a + 1));
             }
 
-            // ---- Item buy mask (size 17): 0=none, 1-6=faire options, 7-16=items ----
+            // ---- Item buy mask (size 18): 0=none, 1-6=faire options, 7-17=items ----
             bool hasSlot = HasEmptyItemSlot(u);
             result.itemBuy = 0x00000001u; // bit 0 = none
             // idx 1-6: faire options (available when advCount/7 > faireUsed)
@@ -3182,7 +3287,7 @@ namespace RLComm
             {
                 if (faireAvailableB && hasSlot) result.itemBuy |= (uint)(1 << bi);
             }
-            for (int bi = 7; bi <= 16; bi++)
+            for (int bi = 7; bi <= 17; bi++)
             {
                 bool canBuy = hasSlot && bi < _shopItems.Length && gold >= _shopItems[bi].cost;
                 if (canBuy) result.itemBuy |= (uint)(1 << bi);
@@ -3652,6 +3757,67 @@ namespace RLComm
                     // Write zeros
                     for (int c = 0; c < GRID_W * GRID_H * 2; c++)
                         w.Write((byte)0);
+                }
+
+                // ---- Creep data ----
+                try
+                {
+                    if (_creepGroup.Handle == IntPtr.Zero)
+                        _creepGroup = Natives.CreateGroup();
+
+                    // Enumerate neutral passive player's units
+                    JassPlayer neutralPlayer = Natives.Player(15); // PLAYER_NEUTRAL_PASSIVE = 15
+                    Natives.GroupEnumUnitsOfPlayer(_creepGroup, neutralPlayer, default(JassBooleanExpression));
+
+                    // Collect creep data into temp arrays
+                    int creepCount = 0;
+                    float[] cxArr = new float[MAX_CREEPS];
+                    float[] cyArr = new float[MAX_CREEPS];
+                    float[] chpArr = new float[MAX_CREEPS];
+                    float[] cmhpArr = new float[MAX_CREEPS];
+
+                    JassUnit cu;
+                    while ((cu = Natives.FirstOfGroup(_creepGroup)).Handle != IntPtr.Zero)
+                    {
+                        Natives.GroupRemoveUnit(_creepGroup, cu);
+                        if (creepCount >= MAX_CREEPS) continue;
+
+                        int cTypeId = 0;
+                        try { cTypeId = (int)Natives.GetUnitTypeId(cu); } catch { continue; }
+
+                        // Only track creep types h043, h044, h045
+                        if (cTypeId != CREEP_TYPE_H043 && cTypeId != CREEP_TYPE_H044 && cTypeId != CREEP_TYPE_H045)
+                            continue;
+
+                        float cHp = 0f, cMaxHp = 0f, cX = 0f, cY = 0f;
+                        try { cHp = Natives.GetUnitState(cu, JassUnitState.Life); } catch { }
+                        try { cMaxHp = Natives.GetUnitState(cu, JassUnitState.MaxLife); } catch { }
+                        try { cX = Natives.GetUnitX(cu); } catch { }
+                        try { cY = Natives.GetUnitY(cu); } catch { }
+
+                        if (cMaxHp <= 0f) continue;  // invalid
+
+                        cxArr[creepCount] = cX;
+                        cyArr[creepCount] = cY;
+                        chpArr[creepCount] = cHp;
+                        cmhpArr[creepCount] = cMaxHp;
+                        creepCount++;
+                    }
+
+                    // Write num_creeps + CreepState array
+                    w.Write((byte)creepCount);
+                    for (int c = 0; c < creepCount; c++)
+                    {
+                        w.Write(cxArr[c]);    // float x
+                        w.Write(cyArr[c]);    // float y
+                        w.Write(chpArr[c]);   // float hp
+                        w.Write(cmhpArr[c]);  // float max_hp
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"[RLComm] Creep enum error: {ex.Message}");
+                    w.Write((byte)0);  // num_creeps = 0
                 }
 
                 w.Flush();
@@ -4806,7 +4972,7 @@ namespace RLComm
                     }
                     return;
                 }
-                else if (itemBuy >= 7 && itemBuy <= 16 && itemBuy < _shopItems.Length)
+                else if (itemBuy >= 7 && itemBuy <= 17 && itemBuy < _shopItems.Length)
                 {
                     ShopItem si = _shopItems[itemBuy];
                     int gold = GetPlayerGold(idx);

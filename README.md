@@ -76,6 +76,31 @@ python rl_patch.py
 - RL 이벤트 훅 (KILL, LVUP, ALARM, DONE 등)
 - JassNative TCP 통신 native 선언
 
+## Reward System
+
+OpenAI Five 스타일 리워드 파이프라인:
+
+| Reward | Value | Description |
+|--------|-------|-------------|
+| Kill (enemy) | +3.0 | 적 서번트 처치 |
+| Death | -1.0 | 사망 |
+| Creep Kill | +0.5 | 크립 처치 (레벨 12 미만만) |
+| Level Up | +0.5 | 레벨업 |
+| Damage Ratio | +3.0 | 적 maxHP 100% 기여 시 (팀 분배) |
+| Heal Ratio | +1.0 | 자신 HP 회복 비율 |
+| Score Point | +2.0 | 팀 점수 획득 |
+| Portal Use | +0.05 | 포탈 사용 (포만도 감소: 0.995^n) |
+| Friendly Kill | -3.0 | 아군 처치 |
+| Idle Penalty | -0.003 | 이동/전투 없이 정지 |
+| Skill Points Held | -0.02 | 미사용 스킬 포인트 보유 |
+| Win / Lose / Timeout | +10 / -5 / -2 | 게임 종료 |
+
+**후처리**: Team Spirit (τ=0.5) → Zero-Sum → Time Decay (0.7^(t/600))
+
+**자동 커리큘럼**:
+- 포탈 리워드: 사용할수록 감소 (`0.05 × 0.995^count`), ~500회 후 자동 소멸
+- 크립 리워드: 레벨 12 이상에서 0 (PvP 전환 유도)
+
 ## Project Structure
 
 ```

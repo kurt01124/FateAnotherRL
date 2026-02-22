@@ -72,7 +72,10 @@ def run_build(cmd, label):
         log(f"  FAILED: {label}", "red")
         output = (result.stdout + result.stderr).strip().split("\n")
         for line in output[-20:]:
-            print(f"    {line}")
+            try:
+                print(f"    {line}")
+            except UnicodeEncodeError:
+                print(f"    {line.encode('ascii', 'replace').decode()}")
         sys.exit(1)
 
 
