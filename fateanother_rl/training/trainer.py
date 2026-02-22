@@ -99,25 +99,29 @@ class RolloutTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info("Training device: %s", self.device)
 
-        # --- Model ---
+        # --- Per-hero Models ---
         model_cfg = config.get("model", {})
-        model_kwargs = dict(
+        self.model_kwargs = dict(
             self_dim=model_cfg.get("self_dim", 77),
             ally_dim=model_cfg.get("ally_dim", 37),
-            enemy_dim=model_cfg.get("enemy_dim", 41),
+            enemy_dim=model_cfg.get("enemy_dim", 43),
             global_dim=model_cfg.get("global_dim", 6),
             grid_channels=model_cfg.get("grid_channels", 3),
             hidden_dim=model_cfg.get("hidden_dim", 256),
         )
-        self.model = FateModel(**model_kwargs).to(self.device)
-        logger.info("Model params: %d", sum(p.numel() for p in self.model.parameters()))
 
-        # --- Optimizer ---
         ppo_cfg = config.get("ppo", {})
-        self.optimizer = optim.Adam(
-            self.model.parameters(),
-            lr=float(ppo_cfg.get("lr", 3e-4)),
-        )
+        lr = float(ppo_cfg.get("lr", 3e-4))
+
+        self.models = {}
+        self.optimizers = {}
+        for hid in HERO_IDS:
+            m = FateModel(**self.model_kwargs).to(self.device)
+            self.models[hid] = m
+            self.optimizers[hid] = optim.Adam(m.parameters(), lr=lr)
+
+        single_params = sum(p.numel() for p in self.models[HERO_IDS[0]].parameters())
+        logger.info("Per-hero model params: %d, total: %d", single_params, single_params * NUM_HEROES)
 
         # --- Directories ---
         train_cfg = config.get("training", {})
@@ -275,34 +279,40 @@ class RolloutTrainer:
     # PPO update
     # ------------------------------------------------------------------
     def _ppo_update(self, buffer) -> dict:
-        """Run PPO on the given buffer."""
+        """Run per-hero PPO on the given buffer."""
         ent_coef = get_entropy_coef(self.iteration, self.max_iterations)
 
-        self.model.train()
         all_stats = []
 
-        for epoch in range(self.ppo_epochs):
-            for batch in buffer.iterate_sequences(self.seq_len, self.batch_size):
-                batch = batch.to(self.device)
+        for hero_idx, hero_id in enumerate(HERO_IDS):
+            model = self.models[hero_id]
+            optimizer = self.optimizers[hero_id]
+            model.train()
 
-                new_lp, new_values, new_entropy = self.model.forward_sequence(
-                    batch.obs, batch.hx_init, batch.masks, batch.actions,
-                )
+            hero_buffer = buffer.slice_agent(hero_idx)
 
-                loss, stats = ppo_loss(
-                    new_lp, batch.old_log_probs,
-                    new_values, batch.returns,
-                    new_entropy, batch.advantages,
-                    clip_eps=self.clip_eps,
-                    vf_coef=self.vf_coef,
-                    ent_coef=ent_coef,
-                )
+            for epoch in range(self.ppo_epochs):
+                for batch in hero_buffer.iterate_sequences(self.seq_len, self.batch_size):
+                    batch = batch.to(self.device)
 
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                self.optimizer.step()
-                all_stats.append(stats)
+                    new_lp, new_values, new_entropy = model.forward_sequence(
+                        batch.obs, batch.hx_init, batch.masks, batch.actions,
+                    )
+
+                    loss, stats = ppo_loss(
+                        new_lp, batch.old_log_probs,
+                        new_values, batch.returns,
+                        new_entropy, batch.advantages,
+                        clip_eps=self.clip_eps,
+                        vf_coef=self.vf_coef,
+                        ent_coef=ent_coef,
+                    )
+
+                    optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+                    optimizer.step()
+                    all_stats.append(stats)
 
         if all_stats:
             return {k: float(np.mean([s[k] for s in all_stats])) for k in all_stats[0]}
@@ -312,17 +322,18 @@ class RolloutTrainer:
     # Model export
     # ------------------------------------------------------------------
     def _export_model(self):
-        """Export model as TorchScript for C++ hot-reload.
+        """Export per-hero TorchScript models for C++ hot-reload.
 
-        Exports a single shared model file. The C++ server loads this
-        for all 12 heroes (hero_id is encoded in self_vec one-hot).
+        Exports one .pt file per hero (e.g. H000.pt, H001.pt, ...).
+        The C++ server loads each hero's model independently.
         """
-        export_path = str(self.model_dir / "model_latest.pt")
-        try:
-            export_model(self.model, export_path, device="cpu")
-            logger.debug("Model exported: %s", export_path)
-        except Exception as e:
-            logger.error("Model export failed: %s", e)
+        for hero_id, model in self.models.items():
+            export_path = str(self.model_dir / f"{hero_id}.pt")
+            try:
+                export_model(model, export_path, device="cpu")
+            except Exception as e:
+                logger.error("Model export failed for %s: %s", hero_id, e)
+        logger.debug("All %d hero models exported", len(self.models))
 
     # ------------------------------------------------------------------
     # Logging and checkpoints
@@ -367,23 +378,36 @@ class RolloutTrainer:
         )
 
     def _save_checkpoint(self, iteration: int):
-        """Save training checkpoint (model + optimizer + counters)."""
+        """Save training checkpoint (per-hero models + optimizers + counters)."""
         path = self.save_dir / f"checkpoint_{iteration:06d}.pt"
         torch.save({
             "iteration": iteration,
             "total_transitions": self.total_transitions,
-            "model_state": self.model.state_dict(),
-            "optimizer_state": self.optimizer.state_dict(),
+            "model_states": {hid: m.state_dict() for hid, m in self.models.items()},
+            "optimizer_states": {hid: o.state_dict() for hid, o in self.optimizers.items()},
         }, str(path))
         logger.info("Checkpoint saved: %s", path)
 
     def load_checkpoint(self, path: str):
         """Load training checkpoint and resume state."""
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(ckpt["model_state"])
-        self.optimizer.load_state_dict(ckpt["optimizer_state"])
+
+        # Support both old single-model and new per-hero checkpoint formats
+        if "model_states" in ckpt:
+            for hid, state in ckpt["model_states"].items():
+                if hid in self.models:
+                    self.models[hid].load_state_dict(state)
+            for hid, state in ckpt["optimizer_states"].items():
+                if hid in self.optimizers:
+                    self.optimizers[hid].load_state_dict(state)
+        elif "model_state" in ckpt:
+            # Legacy: load shared model into all heroes
+            for model in self.models.values():
+                model.load_state_dict(ckpt["model_state"])
+            logger.warning("Loaded legacy shared-model checkpoint into all heroes")
+
         self.iteration = ckpt.get("iteration", 0)
         self.total_transitions = ckpt.get("total_transitions", 0)
         logger.info("Loaded checkpoint: %s (iter=%d)", path, self.iteration)
-        # Re-export model so C++ picks up resumed weights
+        # Re-export models so C++ picks up resumed weights
         self._export_model()

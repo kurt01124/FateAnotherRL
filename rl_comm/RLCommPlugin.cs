@@ -102,7 +102,7 @@ namespace RLComm
             public byte skillLevelup;   // 8 bits (indices 0-5, upper 2 unused)
             public ushort statUpgrade;  // 16 bits (indices 0-9, upper 6 unused)
             public byte attribute;      // 8 bits (indices 0-4, upper 3 unused)
-            public ushort itemBuy;      // 16 bits (indices 0-15)
+            public uint itemBuy;        // 32 bits (indices 0-16, 17 total)
             public byte itemUse;        // 8 bits (indices 0-6, upper 1 unused)
             public byte sealUse;        // 8 bits (indices 0-6, upper 1 unused)
             public byte faireSend;      // 8 bits (indices 0-5, upper 2 unused)
@@ -110,8 +110,9 @@ namespace RLComm
             public byte faireRespond;   // 8 bits (indices 0-2, upper 5 unused)
         }
 
-        // C-rank item stock (global, not per-player)
-        private static int _cRankStock = 8;
+        // Faire (기사회생) tracking -- per-player PVP death count and usage
+        private static int[] _advCount = new int[MAX_PLAYERS];   // PVP deaths (enemy kills only, not creep/suicide)
+        private static int[] _faireUsed = new int[MAX_PLAYERS];  // how many faires consumed
 
         // ============================================================
         // JassStateCache -- data from JASS Preloader messages
@@ -123,6 +124,7 @@ namespace RLComm
             public static int[] firstActive = new int[MAX_PLAYERS]; // 0 or 1
             public static int[] firstRemain = new int[MAX_PLAYERS];
             public static int[] attrCount = new int[MAX_PLAYERS];
+            public static int[,] attrAcquired = new int[MAX_PLAYERS, 5]; // [pid, 1-4] per-attribute acquire count
             public static int[] teamScore = new int[2]; // [team0, team1]
 
             public static void Reset()
@@ -132,6 +134,7 @@ namespace RLComm
                 firstActive = new int[MAX_PLAYERS];
                 firstRemain = new int[MAX_PLAYERS];
                 attrCount = new int[MAX_PLAYERS];
+                attrAcquired = new int[MAX_PLAYERS, 5];
                 teamScore = new int[2];
             }
         }
@@ -1239,11 +1242,16 @@ namespace RLComm
 
         private struct SkillInfo
         {
-            public int abilId;       // FourCC ability id
+            public int abilId;       // FourCC ability id (used for mask: GetUnitAbilityLevel check)
             public string orderId;   // WC3 order string
             public int targetType;   // 0=immediate, 1=unit target, 2=point target
             public float[] maxCd;    // max cooldown per level (5 entries)
             public int[] manaCost;   // mana cost per level (5 entries)
+            public float maxRange;   // point skill maximum range
+            public int learnAbilId;  // if != 0, SelectHeroSkill uses this instead of abilId
+                                     // e.g. FakeAssassin R: abilId=A01P (cast), learnAbilId=A04X (levelup)
+            public int sharedCdGroup; // >0 means all skills with same group share cooldown
+                                      // e.g. FakeAssassin QWER all have sharedCdGroup=1
         }
 
         private struct HeroData
@@ -1264,7 +1272,8 @@ namespace RLComm
         private static int FourCC(string s) { return (s[0] << 24) | (s[1] << 16) | (s[2] << 8) | s[3]; }
 
         private static SkillInfo MakeSkill(string abilIdStr, string orderId, int targetType,
-            float[] maxCd = null, int[] manaCost = null)
+            float[] maxCd = null, int[] manaCost = null, float maxRange = 600f,
+            string learnAbilIdStr = null, int sharedCdGroup = 0)
         {
             return new SkillInfo
             {
@@ -1272,7 +1281,10 @@ namespace RLComm
                 orderId = orderId,
                 targetType = targetType,
                 maxCd = maxCd ?? new float[] { 10, 9, 8, 7, 6 },
-                manaCost = manaCost ?? new int[] { 100, 110, 120, 130, 140 }
+                manaCost = manaCost ?? new int[] { 100, 110, 120, 130, 140 },
+                maxRange = maxRange,
+                learnAbilId = learnAbilIdStr != null ? FourCC(learnAbilIdStr) : 0,
+                sharedCdGroup = sharedCdGroup
             };
         }
 
@@ -1292,213 +1304,249 @@ namespace RLComm
         {
             _heroDataTable.Clear();
 
-            int[] defaultAttrCost = { 7, 10, 14, 9 };
+            // Per-hero attribute costs from JASS s__User_addAttribute calls
+            // Format: { attr1, attr2, attr3, attr4 }
 
             // ---- Saber (H000) ----
             _heroDataTable[FourCC("H000")] = new HeroData
             {
                 heroId = "H000", baseAtk = 30, atkPerStr = 2.0f, baseDef = 5, atkRange = 128, baseAtkSpd = 1.7f,
-                mainStat = 0, attributeCost = defaultAttrCost,
+                mainStat = 0, attributeCost = new int[] { 7, 10, 14, 9 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A087", "unavatar", 1),            // Q InvisibleAir (ANcl Ncl6=unavatar)
-                    MakeSkill("A01H", "unavengerform", 1),      // W Caliburn (ANcl Ncl6=unavengerform)
-                    MakeSkill("A01J", "channel", 0),            // E Excalibur (AUcs order=channel)
-                    MakeSkill("A02B", "divineshield", 0),       // R Avalon (ANcl Ncl6=divineshield)
-                    MakeSkill("A0A5", "roar", 0),               // D SaberInstinct (ANcl Ncl6=roar)
-                    EmptySkill(),                                // F (none)
+                    MakeSkill("A087", "unavatar", 1),            // Q InvisibleAir (ANcl Ncl6=unavatar, unit)
+                    MakeSkill("A01H", "unavengerform", 1),      // W Caliburn (ANcl Ncl6=unavengerform, unit)
+                    MakeSkill("A01J", "carrionswarm", 2),       // E Excalibur (AUcs, point)
+                    MakeSkill("A02B", "battleroar", 0),         // R Avalon (ANbr, imm/self-buff)
+                    MakeSkill("A0G0", "tankloadpilot", 2),      // D StrikeAir (ANcl, lv1:point/tankloadpilot, lv2+:unit/unflamingarrows)
+                    MakeSkill("A0A5", "berserk", 0),            // F SaberInstinct (Absk, imm; 2차속성 후 활성화)
                 }
             };
 
             // ---- Archer/Emiya (H001) ----
+            // Normal: QWER + D(OverEdge, 3rd attr) + F(Clairvoyance→Hrunting)
+            // UBW: Q(간장막야) W(게이볼그) E(로아이아스유지) R(룰브레이커) F(보구투척) G(엑스칼리버이마쥬)
+            // UBW+투영강화: Q W E R F(보구투척) B(전투영연속충사) + D(오버엣지 유지)
             _heroDataTable[FourCC("H001")] = new HeroData
             {
                 heroId = "H001", baseAtk = 28, atkPerStr = 2.0f, baseDef = 4, atkRange = 600, baseAtkSpd = 1.8f,
-                mainStat = 0, attributeCost = defaultAttrCost,
+                mainStat = 0, attributeCost = new int[] { 10, 13, 11, 13 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A019", "transmute", 1),           // Q Kanshou&Bakuya (ANcl Ncl6=transmute)
-                    MakeSkill("A01B", "windwalk", 1),           // W BrokenPhantasm (ANcl Ncl6=windwalk)
-                    MakeSkill("A014", "blight", 1),             // E RhoAias (ANcl Ncl6=blight)
-                    MakeSkill("A03C", "waterelemental", 0),     // R UBW (ANcl Ncl6=waterelemental)
-                    EmptySkill(),                                // D (none)
-                    EmptySkill(),                                // F (none)
+                    MakeSkill("A019", "transmute", 1),           // Q Kanshou&Bakuya (ANcl Ncl6=transmute, unit)
+                    MakeSkill("A01B", "windwalk", 1),           // W BrokenPhantasm (ANcl Ncl6=windwalk, unit)
+                    MakeSkill("A014", "blight", 0),             // E RhoAias (ANcl Ncl6=blight, imm/self-cast)
+                    MakeSkill("A03C", "fanofknives", 0),        // R UBW (AEfk, imm)
+                    MakeSkill("A00P", "inferno", 2),            // D OverEdge (AUin, point; 3rd attr + Q 5회 충전)
+                    MakeSkill("A006", "farsight", 2),           // F Clairvoyance (AOfs, point; 땅 타겟→시야 확보)
                 }
             };
 
             // ---- Lancer/Cu Chulainn (H002) ----
+            // Main skills: A052(SwiftStrikes), A01K(GaeBolg), A028(FlyingSpear)
+            // Runes (A01N learn → 5 added, shared 20s CD, only 1 active at a time):
+            //   A035(Q재정비), A02T(W회복,NO ORDER), A03H(E함정), A05A(R해체,lv1 no Ncl6), A05B(A탐지)
+            // Passive: A09P(화염의룬, ANic, auto on attack/death)
+            // GaeBolg강화 속성: boolean flag only, same ability IDs
             _heroDataTable[FourCC("H002")] = new HeroData
             {
                 heroId = "H002", baseAtk = 32, atkPerStr = 2.0f, baseDef = 5, atkRange = 128, baseAtkSpd = 1.6f,
-                mainStat = 0, attributeCost = defaultAttrCost,
+                mainStat = 0, attributeCost = new int[] { 7, 13, 9, 9 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A035", "carrionscarabs", 1),      // Q Rune-Ansuz (ANcl Ncl6=carrionscarabs)
-                    MakeSkill("A052", "blizzard", 0),           // W SwiftStrikes (ANcl Ncl6=blizzard)
-                    MakeSkill("A01K", "web", 1),                // E GaeBolg (ANcl Ncl6=web)
-                    MakeSkill("A028", "forceofnature", 0),      // R FlyingSpear (ANcl Ncl6=forceofnature)
-                    MakeSkill("A02T", "shockwave", 0),          // D Rune-Ehwaz (ANcl Ncl6=shockwave)
-                    MakeSkill("A03H", "mirrorimage", 0),        // F Rune-Berkanan (ANcl Ncl6=mirrorimage)
+                    MakeSkill("A01N", "", 0),                   // Q RuneMaster (hero skill, learn-only, 캐스팅 불가)
+                    MakeSkill("A052", "berserk", 0),            // W SwiftStrikes (Absk, imm/self-buff)
+                    MakeSkill("A01K", "web", 1),                // E GaeBolg (ANcl Ncl6=web, unit)
+                    MakeSkill("A028", "clusterrockets", 2),     // R FlyingSpear (ANcs, point)
+                    MakeSkill("A035", "carrionscarabs", 0),     // D Rune-재정비 (ANcl Ncl6=carrionscarabs, imm)
+                    MakeSkill("A03H", "stasistrap", 2),         // F Rune-함정 (Asta, point)
+                    // Rune-탐지(A05B,"charm",0) 7th slot 부족으로 제외
+                    // Excluded: A02T(회복,NO ORDER), A05A(해체,lv1 no Ncl6)
                 }
             };
 
             // ---- Rider/Medusa (H003) ----
+            // In-game: Q=단검폭사(A01Q), W=암흑신전(A01R), E=선혈신전(A01F), R=기영의고삐(A01E)
             _heroDataTable[FourCC("H003")] = new HeroData
             {
                 heroId = "H003", baseAtk = 26, atkPerStr = 2.0f, baseDef = 4, atkRange = 128, baseAtkSpd = 1.7f,
-                mainStat = 1, attributeCost = defaultAttrCost,
+                mainStat = 1, attributeCost = new int[] { 8, 15, 11, 11 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A01Q", "cyclone", 0),             // Q CatenaSword (ANcl Ncl6=cyclone)
-                    MakeSkill("A01R", "channel", 0),            // W BreakerGorgon (AUcs order=channel)
-                    MakeSkill("A01F", "metamorphosis", 0),      // E BloodFort (ANcl Ncl6=metamorphosis)
-                    MakeSkill("A01E", "inferno", 0),            // R Bellerophon (ANcl Ncl6=inferno)
+                    MakeSkill("A01Q", "fanofknives", 0),        // Q 단검폭사 CatenaSword (AEfk, imm)
+                    MakeSkill("A01R", "carrionswarm", 2),       // W 암흑신전 BreakerGorgon (AUcs, point)
+                    MakeSkill("A01F", "battleroar", 0),         // E 선혈신전 BloodFort (ANbr, imm)
+                    MakeSkill("A01E", "inferno", 2),            // R 기영의고삐 Bellerophon (AUin, point)
                     EmptySkill(),                                // D (none)
                     EmptySkill(),                                // F (none)
                 }
             };
 
-            // ---- Caster (H004) ----
+            // ---- Caster/Medea (H004) ----
+            // In-game: Q=마력방패, W=신대의마술(스펠북), E=룰브레이커, R=헤카틱글레이어, D=진지작성, F=도구작성
+            // SelectHeroSkill: A022, A08D, A08A, A06L
+            // W(A022)=Aspb 스펠북(캐스팅불가), D(A049)=AIbt 빌드, F(Agyv)=아이템판매UI → RL 직접사용 불가
+            // 스펠북 하위스킬: A03L(화염장막), A01I(무력화), A00L(고속신언), A08E(새크리파이스), A00Y(마력전달)
             _heroDataTable[FourCC("H004")] = new HeroData
             {
                 heroId = "H004", baseAtk = 25, atkPerStr = 2.0f, baseDef = 3, atkRange = 600, baseAtkSpd = 1.8f,
-                mainStat = 2, attributeCost = defaultAttrCost,
+                mainStat = 2, attributeCost = new int[] { 12, 9, 6, 15 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A049", "starfall", 1),            // Q TerritoryCreation (ANcl Ncl6=starfall)
-                    MakeSkill("A08D", "aegis", 1),              // W Aegis (ANcl Ncl6=aegis)
-                    MakeSkill("A08A", "unbearform", 1),         // E RuleBreaker (ANcl Ncl6=unbearform)
-                    MakeSkill("A06L", "carrionswarm", 2),       // R HecaticGraea (ANcl Ncl6=carrionswarm)
-                    EmptySkill(),                                // D (none)
-                    EmptySkill(),                                // F (none)
+                    MakeSkill("A022", "", 0),                    // Q 신대의마술 (Aspb 스펠북, learn-only)
+                    MakeSkill("A08D", "channel", 0),            // W 마력방패 Aegis (ANcl, imm)
+                    MakeSkill("A08A", "unbearform", 1),         // E 룰브레이커 RuleBreaker (ANcl, unit)
+                    MakeSkill("A06L", "healingspray", 2),       // R 헤카틱글레이어 HecaticGraea (ANhs, point)
+                    MakeSkill("A03L", "roar", 0),               // D 화염장막 FireWall (ANcl Ncl6=roar, imm) 스펠북sub
+                    MakeSkill("A01I", "silence", 2),            // F 무력화 Silence (ACsi, point) 스펠북sub
+                    // 슬롯부족 제외: A00L(고속신언,blizzard,point), A08E(새크리파이스,phoenixmorph,imm), A00Y(마력전달,slow,unit)
+                    // 비RL: A049(진지작성,AIbt빌드), Agyv(도구작성,판매UI)
                 }
             };
 
             // ---- FakeAssassin (H005) ----
+            // In-game: Q=문지기, W=소화의소양, E=섬풍, R=츠바메가에시, D=발도(4차속성)
             _heroDataTable[FourCC("H005")] = new HeroData
             {
                 heroId = "H005", baseAtk = 30, atkPerStr = 2.0f, baseDef = 3, atkRange = 128, baseAtkSpd = 1.5f,
-                mainStat = 1, attributeCost = defaultAttrCost,
+                mainStat = 1, attributeCost = new int[] { 6, 16, 11, 12 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A01L", "deathcoil", 1),           // Q Gatekeeper (ANcl Ncl6=deathcoil)
-                    MakeSkill("A05D", "darkportal", 0),         // W Knowledge (ANcl Ncl6=darkportal)
-                    MakeSkill("A01O", "fingerofdeath", 0),      // E Windblade (ANcl Ncl6=fingerofdeath)
-                    MakeSkill("A01P", "firebolt", 1),           // R TsubameGaeshi (ANcl Ncl6=firebolt)
-                    EmptySkill(),                                // D (none)
+                    MakeSkill("A01L", "chemicalrage", 0, sharedCdGroup: 1),  // Q 문지기 Gatekeeper (ANcr, imm/self-buff) shared CD
+                    MakeSkill("A05D", "battleroar", 0, sharedCdGroup: 1),   // W 소화의소양 Knowledge (ANbr, imm/self-buff) shared CD
+                    MakeSkill("A01O", "thunderclap", 0, sharedCdGroup: 1),  // E 섬풍 Windblade (AHtc, imm/self-AOE) shared CD
+                    MakeSkill("A01P", "fingerofdeath", 1, learnAbilIdStr: "A04X", sharedCdGroup: 1), // R 츠바메가에시 TsubameGaeshi (ANfd, unit; learn=A04X proxy) shared CD
+                    MakeSkill("A011", "bloodlustoff", 2),       // D 발도 QuickDraw (ANcl Ncl6=bloodlustoff, point; 4차속성)
                     EmptySkill(),                                // F (none)
                 }
             };
 
             // ---- Berserker (H006) ----
+            // In-game: Q=참격, W=표호, E=광화, R=나인라이브즈. 속성 전부 패시브.
             _heroDataTable[FourCC("H006")] = new HeroData
             {
                 heroId = "H006", baseAtk = 35, atkPerStr = 2.0f, baseDef = 6, atkRange = 128, baseAtkSpd = 1.9f,
-                mainStat = 0, attributeCost = defaultAttrCost,
+                mainStat = 0, attributeCost = new int[] { 16, 13, 17, 12 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A04J", "channel", 0),             // Q TrueStrike (AUcs order=channel)
-                    MakeSkill("A01D", "frostnova", 0),          // W MadEnhancement (ANcl Ncl6=frostnova)
-                    MakeSkill("A00Z", "sleep", 0),              // E Bravery (ANcl Ncl6=sleep)
-                    MakeSkill("A015", "darkconversion", 0),     // R NineLives (ANcl Ncl6=darkconversion)
+                    MakeSkill("A04J", "carrionswarm", 2),        // Q 참격 TrueStrike (AUcs, point)
+                    MakeSkill("A00Z", "berserk", 0),            // W 표호 Bravery (Absk, imm/self-buff)
+                    MakeSkill("A01D", "battleroar", 0),         // E 광화 MadEnhancement (ANbr, imm/self-buff)
+                    MakeSkill("A015", "clusterrockets", 2),     // R 나인라이브즈 NineLives (ANcs, point)
                     EmptySkill(),                                // D (none)
                     EmptySkill(),                                // F (none)
                 }
             };
 
             // ---- SaberAlter (H007) ----
+            // In-game: Q=폭정, W=마력방출, E=비왕철퇴, R=ExcaliburMorgan, F=흉폭성개방
+            // 속성: 데미지/범위 강화만, 액티브 변경 없음
             _heroDataTable[FourCC("H007")] = new HeroData
             {
                 heroId = "H007", baseAtk = 33, atkPerStr = 2.0f, baseDef = 5, atkRange = 128, baseAtkSpd = 1.8f,
-                mainStat = 0, attributeCost = defaultAttrCost,
+                mainStat = 0, attributeCost = new int[] { 13, 15, 12, 10 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A00B", "cripple", 0),             // Q Tyrant (ANcl Ncl6=cripple)
-                    MakeSkill("A07S", "recharge", 1),           // W Vortigern (ANcl Ncl6=recharge)
-                    MakeSkill("A024", "possession", 0),         // E PranaBurst (ANcl Ncl6=possession)
-                    MakeSkill("A023", "channel", 0),            // R ExcaliburMorgan (AUcs order=channel)
+                    MakeSkill("A00B", "roar", 0),                // Q 폭정 Tyrant (Aroa, imm/self-buff)
+                    MakeSkill("A024", "thunderclap", 0),        // W 마력방출 PranaBurst (AHtc, imm/self-AOE)
+                    MakeSkill("A07S", "recharge", 2),           // E 비왕철퇴 Vortigern (ANcl Ncl6=recharge, point)
+                    MakeSkill("A023", "carrionswarm", 2),       // R ExcaliburMorgan (AUcs, point)
                     EmptySkill(),                                // D (none)
-                    EmptySkill(),                                // F (none)
+                    MakeSkill("A01T", "channel", 0),            // F 흉폭성개방 Ferocity (ANcl Ncl6=channel, imm)
                 }
             };
 
             // ---- TrueAssassin (H008) ----
+            // In-game: Q=기습, W=자기개조, E=강탈, R=망상심음, D=단도투척, F=기척차단
             _heroDataTable[FourCC("H008")] = new HeroData
             {
                 heroId = "H008", baseAtk = 28, atkPerStr = 2.0f, baseDef = 3, atkRange = 128, baseAtkSpd = 1.5f,
-                mainStat = 1, attributeCost = defaultAttrCost,
+                mainStat = 1, attributeCost = new int[] { 9, 8, 9, 13 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A09Y", "inferno", 1),             // Q Steal (ANcl Ncl6=inferno)
-                    MakeSkill("A018", "deathanddecay", 0),      // W SelfReconstruction (ANcl Ncl6=deathanddecay)
-                    MakeSkill("A012", "ambush", 0),             // E Ambush (AOwk aord=ambush)
-                    MakeSkill("A02A", "unavengerform", 1),      // R Zabaniya (ANcl Ncl6=unavengerform)
-                    EmptySkill(),                                // D (none)
-                    EmptySkill(),                                // F (none)
+                    MakeSkill("A012", "windwalk", 0),           // Q 기습 Ambush (AOwk, imm/self-buff)
+                    MakeSkill("A018", "starfall", 0),           // W 자기개조 SelfReconstruction (AEsb, imm)
+                    MakeSkill("A09Y", "fingerofdeath", 1),      // E 강탈 Steal (ANfd, unit)
+                    MakeSkill("A02A", "unavengerform", 1),      // R 망상심음 Zabaniya (ANcl, unit)
+                    MakeSkill("A03A", "forkedlightning", 1),    // D 단도투척 ThrowDagger (ANfl, unit)
+                    MakeSkill("A009", "shadowmeld", 0),         // F 기척차단 PresenceConcealment (Ashm, imm/toggle)
                 }
             };
 
             // ---- Gilgamesh (H009) ----
+            // In-game: Q=하늘의사슬, W=마르두크, E=왕의재보, R=에아, F=보구투척
             _heroDataTable[FourCC("H009")] = new HeroData
             {
                 heroId = "H009", baseAtk = 30, atkPerStr = 2.0f, baseDef = 4, atkRange = 500, baseAtkSpd = 1.7f,
-                mainStat = 0, attributeCost = defaultAttrCost,
+                mainStat = 0, attributeCost = new int[] { 8, 12, 10, 9 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A01Y", "unavengerform", 1),       // Q Marduk (ANcl Ncl6=unavengerform)
-                    MakeSkill("A01X", "creepthunderbolt", 1),   // W Enkidu (ANcl Ncl6=creepthunderbolt)
-                    MakeSkill("A01Z", "cloudoffog", 1),         // E GateOfBabylon (ANcl Ncl6=cloudoffog)
-                    MakeSkill("A02E", "channel", 0),            // R EnumaElish (AUcs order=channel)
+                    MakeSkill("A01X", "magicleash", 1),         // Q 하늘의사슬 Enkidu (Amls, unit)
+                    MakeSkill("A01Y", "unavengerform", 1),      // W 마르두크 Marduk (ANcl, unit)
+                    MakeSkill("A01Z", "stampede", 2),           // E 왕의재보 GateOfBabylon (ANst, point)
+                    MakeSkill("A02E", "carrionswarm", 2),       // R 에아 EnumaElish (AUcs, point)
                     EmptySkill(),                                // D (none)
-                    EmptySkill(),                                // F (none)
+                    MakeSkill("A01G", "blizzard", 2),           // F 보구투척 NPBarrage (ACbz, point)
                 }
             };
 
             // ---- Avenger (H028) ----
+            // In-game: Q=사멸원망, W=타루와이제레치에, E=잔해화, R=VergAvesta, F=어둠의순례
+            // 잔해화 모드(morph): Q→A06U(무한의잔해,animatedead,imm), W→A080(피의저주,curse,unit)
+            // uhab stubs: A0BG/A0BF/A0BH/A0BE (learn-only). Cast IDs below are correct.
             _heroDataTable[FourCC("H028")] = new HeroData
             {
                 heroId = "H028", baseAtk = 29, atkPerStr = 2.0f, baseDef = 4, atkRange = 128, baseAtkSpd = 1.7f,
-                mainStat = 0, attributeCost = defaultAttrCost,
+                mainStat = 0, attributeCost = new int[] { 8, 9, 15, 10 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A06J", "spellsteal", 0),          // Q KillingIntent (ANcl Ncl6=spellsteal)
-                    MakeSkill("A05V", "polymorph", 1),          // W TawrichZarich (ANcl Ncl6=polymorph)
-                    MakeSkill("A05X", "drain", 1),              // E Shade (ANcl Ncl6=drain)
-                    MakeSkill("A02P", "absorb", 1),             // R VergAvesta (ANcl Ncl6=absorb)
-                    EmptySkill(),                                // D (none)
-                    EmptySkill(),                                // F (none)
+                    MakeSkill("A06J", "roar", 0),                // Q 사멸원망 KillingIntent (ACro, imm)
+                    MakeSkill("A05V", "polymorph", 1),          // W 타루와이제레치에 TawrichZarich (ANcl, unit)
+                    MakeSkill("A05X", "chemicalrage", 0),       // E 잔해화 Shade (ANcr, imm/morph toggle)
+                    MakeSkill("A02P", "absorb", 0),             // R VergAvesta (ANcl, imm)
+                    MakeSkill("A0D7", "spellshield", 0),        // D 분진폭발 DustExplosion (ANcl, imm) - 잔해화 전용
+                    MakeSkill("A045", "blink", 2),              // F 어둠의순례 DarkPilgrimage (AIbk, point)
                 }
             };
 
             // ---- Lancelot (H03M) ----
+            // In-game: Q=서브머신건, W=양날의검, E=기사는맨손으로(KoH스펠북), R=무훼의호광(Arondight)
+            // KoH 하위스킬: A05M(Caliburn), A08W(Rhongomyniad), A090(RuleBreaker), A0SY(GaeDearg), A08R(ArondightOverload)
+            // SelectHeroSkill: A02Z, A08F, A09B, A08S
             _heroDataTable[FourCC("H03M")] = new HeroData
             {
                 heroId = "H03M", baseAtk = 32, atkPerStr = 2.0f, baseDef = 5, atkRange = 128, baseAtkSpd = 1.7f,
-                mainStat = 0, attributeCost = defaultAttrCost,
+                mainStat = 0, attributeCost = new int[] { 11, 7, 7, 7 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A02Z", "charm", 1),               // Q SubmachineGun (ANcl Ncl6=charm)
-                    MakeSkill("A08F", "acidbomb", 0),           // W DoubleEdgedSword (ANcl Ncl6=acidbomb)
-                    MakeSkill("A09B", "knightnotdie", 0),       // E KnightNotDie (ANcl Ncl6=knightnotdie)
-                    MakeSkill("A08S", "healingspray", 1),       // R Arondight (ANcl Ncl6=healingspray)
-                    EmptySkill(),                                // D (none)
-                    EmptySkill(),                                // F (none)
+                    MakeSkill("A02Z", "charm", 2),               // Q 서브머신건 SubmachineGun (ANcl, point)
+                    MakeSkill("A08F", "berserk", 0),            // W 양날의검 DoubleEdgedSword (Absk, imm)
+                    MakeSkill("A09B", "", 0),                   // E 기사는맨손으로 KnightOfHonor (learn-only, KoH스펠북)
+                    MakeSkill("A08S", "chemicalrage", 0),       // R 무훼의호광 Arondight (ANcr, imm)
+                    MakeSkill("A091", "lightningshield", 2),    // D KnightOfHonor2 (ANcl, point) 콤보 전용
+                    MakeSkill("A0E6", "unroot", 0),             // F 무궁의무련 EternalArmsMastership (ANcl, imm) 1차속성
+                    // KoH 하위(슬롯부족): A05M(Caliburn,unavengerform,unit), A08W(Rhongo,unflamingarrows,point)
+                    // A090(RuleBreaker,unbearform,unit), A0SY(GaeDearg,autoharvestgold,unit), A08R(ArondightOverload,clusterrockets,point)
                 }
             };
 
             // ---- Diarmuid (H04D) ----
+            // In-game: Q=격돌, W=기사의무략, E=필멸의황장미(GaeBuidhe), R=파마의홍장미(GaeDearg), D=매혹의점, F=쌍창격(토글)
+            // SelectHeroSkill: A0AG, A0AI, A0AO, A0AP
+            // uhab stubs: A0AO/A0AP (learn-only). Cast IDs A0AL/A0AM are correct.
+            // F(A0AX)=ACim(Immolation) 토글, 쌍창격 속성 찍을시 해금. GaeBuidhe 시전시 A0AX>0이면 자동 발동.
             _heroDataTable[FourCC("H04D")] = new HeroData
             {
                 heroId = "H04D", baseAtk = 30, atkPerStr = 2.0f, baseDef = 4, atkRange = 128, baseAtkSpd = 1.6f,
-                mainStat = 1, attributeCost = defaultAttrCost,
+                mainStat = 1, attributeCost = new int[] { 7, 11, 11, 14 },
                 skills = new SkillInfo[]
                 {
-                    MakeSkill("A0AG", "transmute", 1),           // Q Crash (ANcl Ncl6=transmute)
-                    MakeSkill("A0AI", "lavamonster", 0),        // W DoubleSpearMastery (ANcl Ncl6=lavamonster)
-                    MakeSkill("A0AL", "soulburn", 1),           // E GaeBuidhe (ANcl Ncl6=soulburn)
-                    MakeSkill("A0AM", "volcano", 1),            // R GaeDearg (ANcl Ncl6=volcano)
-                    EmptySkill(),                                // D (none)
-                    EmptySkill(),                                // F (none)
+                    MakeSkill("A0AG", "chainlightning", 1),      // Q 격돌 Crash (AOcl, unit)
+                    MakeSkill("A0AI", "stomp", 0),              // W 기사의무략 DoubleSpearMastery (AOw2, imm)
+                    MakeSkill("A0AL", "frostnova", 1),          // E 필멸의황장미 GaeBuidhe (AUfn, unit)
+                    MakeSkill("A0AM", "fingerofdeath", 1),      // R 파마의홍장미 GaeDearg (Afod, unit)
+                    MakeSkill("A0B0", "drunkenhaze", 1),        // D 매혹의점 LoveSpotOfSeduction (Acdh, unit)
+                    MakeSkill("A0AX", "immolation", 0),         // F 쌍창격 DoubleSpearStrike (ACim, toggle) 4차속성
                 }
             };
 
@@ -1508,7 +1556,8 @@ namespace RLComm
         // ============================================================
         // Shop Items Table
         // ============================================================
-        // item_buy indices: 0=none, 1-4=C-rank tiers, 5-15=specific items
+        // item_buy indices: 0=none, 1-6=faire (기사회생) options, 7-16=gold shop items
+        // Total: 17 indices → uint32 mask (was ushort/16)
         private struct ShopItem
         {
             public string typeId;
@@ -1517,26 +1566,24 @@ namespace RLComm
 
         private static readonly ShopItem[] _shopItems = new ShopItem[]
         {
-            new ShopItem { typeId = "",     cost = 0 },     // 0: none
-            new ShopItem { typeId = "",     cost = 0 },     // 1: C-rank tier (1 stock)
-            new ShopItem { typeId = "",     cost = 0 },     // 2: C-rank tier (2 stock)
-            new ShopItem { typeId = "",     cost = 0 },     // 3: C-rank tier (4 stock)
-            new ShopItem { typeId = "",     cost = 0 },     // 4: C-rank tier (8 stock)
-            new ShopItem { typeId = "I00E", cost = 100 },   // 5
-            new ShopItem { typeId = "I00A", cost = 250 },   // 6
-            new ShopItem { typeId = "I002", cost = 300 },   // 7
-            new ShopItem { typeId = "I01A", cost = 400 },   // 8
-            new ShopItem { typeId = "I00B", cost = 500 },   // 9
-            new ShopItem { typeId = "I00I", cost = 700 },   // 10
-            new ShopItem { typeId = "I00G", cost = 750 },   // 11
-            new ShopItem { typeId = "I003", cost = 800 },   // 12
-            new ShopItem { typeId = "I011", cost = 1500 },  // 13
-            new ShopItem { typeId = "I00M", cost = 1500 },  // 14
-            new ShopItem { typeId = "",     cost = 0 },     // 15: removed I00R (7-death bonus, not purchasable)
+            new ShopItem { typeId = "",     cost = 0 },     // 0:  none
+            new ShopItem { typeId = "",     cost = 0 },     // 1:  faire - A04B 골드토큰(I00D)     order=flare
+            new ShopItem { typeId = "",     cost = 0 },     // 2:  faire - A04F +3레벨             order=heal
+            new ShopItem { typeId = "",     cost = 0 },     // 3:  faire - A0DD +12스탯포인트       order=sanctuary
+            new ShopItem { typeId = "",     cost = 0 },     // 4:  faire - A04C 항마력(I00W)       order=frenzy
+            new ShopItem { typeId = "",     cost = 0 },     // 5:  faire - A04D 아이템(I004)+3000g order=frostnova
+            new ShopItem { typeId = "",     cost = 0 },     // 6:  faire - A00U 무적결계(I006)     order=holybolt
+            new ShopItem { typeId = "I00E", cost = 100  },  // 7:  평행이동 주문서
+            new ShopItem { typeId = "I00A", cost = 250  },  // 8:  속도의 보석
+            new ShopItem { typeId = "I002", cost = 300  },  // 9:  패밀리어
+            new ShopItem { typeId = "I01A", cost = 400  },  // 10: 조합 주문서
+            new ShopItem { typeId = "I00B", cost = 500  },  // 11: 워프 포탈
+            new ShopItem { typeId = "I00I", cost = 700  },  // 12: 회복포션
+            new ShopItem { typeId = "I00G", cost = 750  },  // 13: 버서크 포션
+            new ShopItem { typeId = "I003", cost = 800  },  // 14: 결계 주문서
+            new ShopItem { typeId = "I011", cost = 1500 },  // 15: 네비게이션
+            new ShopItem { typeId = "I00M", cost = 1500 },  // 16: 단체 워프 포탈
         };
-
-        // C-rank stock costs: tier 1=1, tier 2=2, tier 3=4, tier 4=8
-        private static readonly int[] _cRankStockCosts = { 0, 1, 2, 4, 8 };
 
         // ============================================================
         // Seal Types
@@ -1600,6 +1647,19 @@ namespace RLComm
             return Math.Max(min, Math.Min(max, val));
         }
 
+        /// <summary>Decode polar-coordinate action outputs into world-space point.
+        /// pointX in [-1,1] maps to angle [-pi, pi], pointY in [-1,1] maps to distance [0, maxRange].</summary>
+        private static void DecodePolarPoint(float pointX, float pointY, float maxRange,
+            float cx, float cy, out float tx, out float ty)
+        {
+            float angle = pointX * (float)Math.PI;                // [-1,1] -> [-pi, pi]
+            float dist  = (pointY + 1f) * 0.5f * maxRange;       // [-1,1] -> [0, maxRange]
+            tx = cx + dist * (float)Math.Cos(angle);
+            ty = cy + dist * (float)Math.Sin(angle);
+            tx = Clampf(tx, MAP_MIN_X + 64, MAP_MAX_X - 64);
+            ty = Clampf(ty, MAP_MIN_Y + 64, MAP_MAX_Y - 64);
+        }
+
         /// <summary>Get player gold via PlayerState</summary>
         private static int GetPlayerGold(int pid)
         {
@@ -1650,23 +1710,18 @@ namespace RLComm
             return false;
         }
 
-        /// <summary>Get seal item and charges from unit inventory</summary>
-        private static SealResult GetSealItem(JassUnit u)
+        /// <summary>Get seal charges from grail unit slot 1 (JASS: s__User_grail[pid] slot 1)</summary>
+        private static SealResult GetSealItem(int pid)
         {
+            if (!_grailRegistered[pid])
+                return new SealResult { item = default(JassItem), charges = 0 };
             try
             {
-                for (int slot = 0; slot < 6; slot++)
+                JassItem itm = Natives.UnitItemInSlot(_grailUnits[pid], 1); // slot 1 = command seal charges
+                if (itm.Handle != IntPtr.Zero)
                 {
-                    JassItem itm = Natives.UnitItemInSlot(u, slot);
-                    if (itm.Handle != IntPtr.Zero)
-                    {
-                        int itmType = (int)Natives.GetItemTypeId(itm);
-                        if (itmType == FourCC("I008"))
-                        {
-                            int charges = (int)Natives.GetItemCharges(itm);
-                            return new SealResult { item = itm, charges = charges };
-                        }
-                    }
+                    int charges = (int)Natives.GetItemCharges(itm);
+                    return new SealResult { item = itm, charges = charges };
                 }
             }
             catch { }
@@ -1674,16 +1729,46 @@ namespace RLComm
         }
 
         /// <summary>Get stat_points from grail unit slot 0 charges</summary>
+        private static int _statPointsLogCounter = 0;
+        private static bool _statPointsFirstLog = true;
         private static int GetStatPoints(int pid)
         {
-            if (!_grailRegistered[pid]) return 0;
+            if (!_grailRegistered[pid])
+            {
+                if (pid == 0 && _statPointsFirstLog)
+                {
+                    _statPointsFirstLog = false;
+                    Log($"[RLComm] DEBUG GetStatPoints p0: grailRegistered=FALSE");
+                }
+                return 0;
+            }
             try
             {
                 JassItem itm = Natives.UnitItemInSlot(_grailUnits[pid], 0);
                 if (itm.Handle != IntPtr.Zero)
-                    return (int)Natives.GetItemCharges(itm);
+                {
+                    int charges = (int)Natives.GetItemCharges(itm);
+                    if (pid == 0 && (_statPointsFirstLog || ++_statPointsLogCounter % 500 == 0))
+                    {
+                        _statPointsFirstLog = false;
+                        Log($"[RLComm] DEBUG GetStatPoints p{pid}: grail={_grailUnits[pid].Handle}, item={itm.Handle}, charges={charges}");
+                    }
+                    return charges;
+                }
+                else
+                {
+                    if (pid == 0 && (_statPointsFirstLog || ++_statPointsLogCounter % 500 == 0))
+                    {
+                        _statPointsFirstLog = false;
+                        Log($"[RLComm] DEBUG GetStatPoints p{pid}: grail={_grailUnits[pid].Handle}, slot0 item=NULL");
+                    }
+                }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                if (pid == 0)
+                    Log($"[RLComm] DEBUG GetStatPoints p{pid} exception: {ex.Message}");
+            }
             return 0;
         }
 
@@ -1803,6 +1888,22 @@ namespace RLComm
                             ["victim"] = victim,
                             ["tick"] = tickCount
                         });
+
+                        // Track PVP deaths for faire: only count if killer != victim (not suicide)
+                        // and both are valid players (0-11, not creep=12+)
+                        if (killer >= 0 && killer < MAX_PLAYERS && victim >= 0 && victim < MAX_PLAYERS && killer != victim)
+                        {
+                            int killerTeam = killer < 6 ? 0 : 1;
+                            int victimTeam = victim < 6 ? 0 : 1;
+                            if (killerTeam != victimTeam)  // enemy kill only
+                            {
+                                _advCount[victim]++;
+                                if (_advCount[victim] % 7 == 0)
+                                {
+                                    Log($"[RLComm] Faire available for p{victim} (advCount={_advCount[victim]})");
+                                }
+                            }
+                        }
                     }
                 }
                 else if (cmd.StartsWith("RL_CREEP|"))
@@ -1903,12 +2004,15 @@ namespace RLComm
                     _pathabilityGrid = null;
                     _eventQueue.Clear();
                     _cdTracker.Clear();
-                    _cRankStock = 8;
                     _faireRequests.Clear();
                     JassStateCache.Reset();
+                    // NOTE: Do NOT reset _grailRegistered here!
+                    // RL_INIT fires AFTER hero/grail registration (from RL_WaitReady),
+                    // so resetting here would wipe valid grail handles.
                     for (int i = 0; i < MAX_PLAYERS; i++)
                     {
-                        _grailRegistered[i] = false;
+                        _advCount[i] = 0;
+                        _faireUsed[i] = 0;
                         _alarmState[i] = false;
                         _prevX[i] = 0f;
                         _prevY[i] = 0f;
@@ -2278,7 +2382,7 @@ namespace RLComm
                 };
 
                 // Seal data
-                var sealData = GetSealItem(u);
+                var sealData = GetSealItem(i);
                 int sealCharges = sealData.charges;
 
                 // Items
@@ -2401,7 +2505,7 @@ namespace RLComm
             // Shop info
             var shopObj = new JObject
             {
-                ["c_rank_stock"] = _cRankStock
+                ["c_rank_stock"] = 0  // deprecated, kept for compatibility
             };
 
             // Global
@@ -2609,7 +2713,7 @@ namespace RLComm
                 ["skill_levelup"] = new JArray(true, false, false, false, false, false),
                 ["stat_upgrade"] = new JArray(true, false, false, false, false, false, false, false, false, false),
                 ["attribute"] = new JArray(true, false, false, false, false),
-                ["item_buy"] = BuildFalseArrayWithNone(16),
+                ["item_buy"] = BuildFalseArrayWithNone(17),
                 ["item_use"] = BuildFalseArrayWithNone(7),
                 ["seal_use"] = BuildFalseArrayWithNone(7),
                 ["faire_send"] = BuildFalseArrayWithNone(6),
@@ -2637,7 +2741,7 @@ namespace RLComm
                 var deadMask = BuildEmptyActionMask();
 
                 // Check if revive seal is available (seal_use[5])
-                var sealData = GetSealItem(u);
+                var sealData = GetSealItem(heroIdx);
                 int sealCharges = sealData.charges;
                 bool firstActive = JassStateCache.firstActive[heroIdx] != 0;
                 int reviveCost = firstActive ? _sealCostsFirstActive[5] : _sealCosts[5];
@@ -2660,7 +2764,8 @@ namespace RLComm
             for (int s = 0; s < 6; s++) // Q,W,E,R,D,F
             {
                 bool canUse = false;
-                if (alive && hasData && s < hdata.skills.Length && hdata.skills[s].abilId != 0)
+                if (alive && hasData && s < hdata.skills.Length && hdata.skills[s].abilId != 0
+                    && !string.IsNullOrEmpty(hdata.skills[s].orderId))
                 {
                     SkillInfo si = hdata.skills[s];
                     int abilLevel = 0;
@@ -2728,8 +2833,9 @@ namespace RLComm
                 if (skillPoints > 0 && hasData && s < hdata.skills.Length && hdata.skills[s].abilId != 0)
                 {
                     SkillInfo si = hdata.skills[s];
+                    int checkAbilId = si.learnAbilId != 0 ? si.learnAbilId : si.abilId;
                     int curLevel = 0;
-                    try { curLevel = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)si.abilId); } catch { }
+                    try { curLevel = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)checkAbilId); } catch { }
                     int maxLevel = s == 3 ? 3 : 5; // R usually max 3, others max 5
                     canLevel = curLevel < maxLevel;
                     if (curLevel < 5) allQwerMaxed = false;
@@ -2753,32 +2859,33 @@ namespace RLComm
             }
 
             // ---- Attribute mask (size 5): 0=none, 1-4=A/B/C/D ----
-            int attrCount = JassStateCache.attrCount[heroIdx];
+            // No sequential constraint — any attribute can be chosen if not yet acquired and affordable
+            // Lancelot (H03M) attr4 can be acquired twice
+            bool isLancelot = hasData && hdata.heroId == "H03M";
             var attrMask = new JArray();
             attrMask.Add(true); // 0=none
             for (int a = 0; a < 4; a++)
             {
-                // Sequential: can only acquire attribute a+1 if you have a attributes already
-                // So attribute 1 requires attrCount==0, attribute 2 requires attrCount==1, etc.
-                bool canAcquire = attrCount == a && statPoints > 0;
-                // Also check if we can afford it (from attributeCost)
+                int maxAcq = (isLancelot && a == 3) ? 2 : 1;
+                bool canAcquire = JassStateCache.attrAcquired[heroIdx, a + 1] < maxAcq;
                 if (canAcquire && hasData && hdata.attributeCost != null && a < hdata.attributeCost.Length)
-                {
                     canAcquire = statPoints >= hdata.attributeCost[a];
-                }
+                else if (canAcquire)
+                    canAcquire = statPoints >= 10; // default cost
                 attrMask.Add(canAcquire);
             }
 
-            // ---- Item buy mask (size 16): 0=none, 1-4=C-rank tiers, 5-15=items ----
+            // ---- Item buy mask (size 17): 0=none, 1-6=faire options, 7-16=items ----
             bool hasSlot = HasEmptyItemSlot(u);
             var itemBuyMask = new JArray();
             itemBuyMask.Add(true); // 0=none
-            for (int bi = 1; bi <= 4; bi++)
+            // idx 1-6: faire options (available when advCount/7 > faireUsed)
+            bool faireAvailable = (_advCount[heroIdx] / 7) > _faireUsed[heroIdx];
+            for (int bi = 1; bi <= 6; bi++)
             {
-                bool canBuy = hasSlot && bi < _cRankStockCosts.Length && _cRankStock >= _cRankStockCosts[bi];
-                itemBuyMask.Add(canBuy);
+                itemBuyMask.Add(faireAvailable && hasSlot);
             }
-            for (int bi = 5; bi <= 15; bi++)
+            for (int bi = 7; bi <= 16; bi++)
             {
                 bool canBuy = hasSlot && bi < _shopItems.Length && gold >= _shopItems[bi].cost;
                 itemBuyMask.Add(canBuy);
@@ -2806,7 +2913,7 @@ namespace RLComm
             // ---- Seal use mask (size 7): 0=none, 1=first_activate, 2=cd_reset, 3=hp_recover, 4=mp_recover, 5=revive, 6=teleport ----
             var sealUseMask = new JArray();
             sealUseMask.Add(true); // 0=none
-            var sealInfo = GetSealItem(u);
+            var sealInfo = GetSealItem(heroIdx);
             int sealChg = sealInfo.charges;
             bool isFirstActive = JassStateCache.firstActive[heroIdx] != 0;
             int sealCd = JassStateCache.sealCd[heroIdx];
@@ -2904,7 +3011,7 @@ namespace RLComm
             m.skillLevelup = 0x01;      // bit 0 = none
             m.statUpgrade = 0x0001;     // bit 0 = none
             m.attribute = 0x01;         // bit 0 = none
-            m.itemBuy = 0x0001;         // bit 0 = none
+            m.itemBuy = 0x00000001u;    // bit 0 = none
             m.itemUse = 0x01;           // bit 0 = none
             m.sealUse = 0x01;           // bit 0 = none
             m.faireSend = 0x01;         // bit 0 = none
@@ -2927,7 +3034,7 @@ namespace RLComm
                 var deadMask = BuildEmptyActionMaskBits();
 
                 // Check if revive seal is available (seal_use[5])
-                var sealData = GetSealItem(u);
+                var sealData = GetSealItem(heroIdx);
                 int sealCharges = sealData.charges;
                 bool firstActive = JassStateCache.firstActive[heroIdx] != 0;
                 int reviveCost = firstActive ? _sealCostsFirstActive[5] : _sealCosts[5];
@@ -2951,7 +3058,8 @@ namespace RLComm
             for (int s = 0; s < 6; s++) // Q,W,E,R,D,F
             {
                 bool canUse = false;
-                if (alive && hasData && s < hdata.skills.Length && hdata.skills[s].abilId != 0)
+                if (alive && hasData && s < hdata.skills.Length && hdata.skills[s].abilId != 0
+                    && !string.IsNullOrEmpty(hdata.skills[s].orderId))
                 {
                     SkillInfo si = hdata.skills[s];
                     int abilLevel = 0;
@@ -3025,8 +3133,9 @@ namespace RLComm
                 if (skillPoints > 0 && hasData && s < hdata.skills.Length && hdata.skills[s].abilId != 0)
                 {
                     SkillInfo si = hdata.skills[s];
+                    int checkAbilId = si.learnAbilId != 0 ? si.learnAbilId : si.abilId;
                     int curLevel = 0;
-                    try { curLevel = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)si.abilId); } catch { }
+                    try { curLevel = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)checkAbilId); } catch { }
                     int maxLevel = s == 3 ? 3 : 5; // R usually max 3, others max 5
                     canLevel = curLevel < maxLevel;
                     if (curLevel < 5) allQwerMaxed = false;
@@ -3049,30 +3158,34 @@ namespace RLComm
             }
 
             // ---- Attribute mask (size 5): 0=none, 1-4=A/B/C/D ----
-            int attrCount = JassStateCache.attrCount[heroIdx];
+            // No sequential constraint — any attribute freely choosable
+            // Lancelot (H03M) attr4 can be acquired twice
+            bool isLancelotB = hasData && hdata.heroId == "H03M";
             result.attribute = 0x01; // bit 0 = none
             for (int a = 0; a < 4; a++)
             {
-                bool canAcquire = attrCount == a && statPoints > 0;
+                int maxAcq = (isLancelotB && a == 3) ? 2 : 1;
+                bool canAcquire = JassStateCache.attrAcquired[heroIdx, a + 1] < maxAcq;
                 if (canAcquire && hasData && hdata.attributeCost != null && a < hdata.attributeCost.Length)
-                {
                     canAcquire = statPoints >= hdata.attributeCost[a];
-                }
+                else if (canAcquire)
+                    canAcquire = statPoints >= 10;
                 if (canAcquire) result.attribute |= (byte)(1 << (a + 1));
             }
 
-            // ---- Item buy mask (size 16): 0=none, 1-4=C-rank tiers, 5-15=items ----
+            // ---- Item buy mask (size 17): 0=none, 1-6=faire options, 7-16=items ----
             bool hasSlot = HasEmptyItemSlot(u);
-            result.itemBuy = 0x0001; // bit 0 = none
-            for (int bi = 1; bi <= 4; bi++)
+            result.itemBuy = 0x00000001u; // bit 0 = none
+            // idx 1-6: faire options (available when advCount/7 > faireUsed)
+            bool faireAvailableB = (_advCount[heroIdx] / 7) > _faireUsed[heroIdx];
+            for (int bi = 1; bi <= 6; bi++)
             {
-                bool canBuy = hasSlot && bi < _cRankStockCosts.Length && _cRankStock >= _cRankStockCosts[bi];
-                if (canBuy) result.itemBuy |= (ushort)(1 << bi);
+                if (faireAvailableB && hasSlot) result.itemBuy |= (uint)(1 << bi);
             }
-            for (int bi = 5; bi <= 15; bi++)
+            for (int bi = 7; bi <= 16; bi++)
             {
                 bool canBuy = hasSlot && bi < _shopItems.Length && gold >= _shopItems[bi].cost;
-                if (canBuy) result.itemBuy |= (ushort)(1 << bi);
+                if (canBuy) result.itemBuy |= (uint)(1 << bi);
             }
 
             // ---- Item use mask (size 7): 0=none, 1-6=slot ----
@@ -3095,7 +3208,7 @@ namespace RLComm
 
             // ---- Seal use mask (size 7): 0=none, 1=first_activate, 2=cd_reset, 3=hp_recover, 4=mp_recover, 5=revive, 6=teleport ----
             result.sealUse = 0x01; // bit 0 = none
-            var sealInfo = GetSealItem(u);
+            var sealInfo = GetSealItem(heroIdx);
             int sealChg = sealInfo.charges;
             bool isFirstActive = JassStateCache.firstActive[heroIdx] != 0;
             int sealCd = JassStateCache.sealCd[heroIdx];
@@ -3153,7 +3266,7 @@ namespace RLComm
             return result;
         }
 
-        /// <summary>Write action mask from packed ActionMaskBits (14 bytes, zero-allocation)</summary>
+        /// <summary>Write action mask from packed ActionMaskBits (16 bytes, zero-allocation)</summary>
         private static void WriteActionMaskBinary(BinaryWriter w, ActionMaskBits mask)
         {
             w.Write(mask.skill);          // 1 byte
@@ -3161,7 +3274,7 @@ namespace RLComm
             w.Write(mask.skillLevelup);   // 1 byte
             w.Write(mask.statUpgrade);    // 2 bytes
             w.Write(mask.attribute);      // 1 byte
-            w.Write(mask.itemBuy);        // 2 bytes
+            w.Write(mask.itemBuy);        // 4 bytes (uint32)
             w.Write(mask.itemUse);        // 1 byte
             w.Write(mask.sealUse);        // 1 byte
             w.Write(mask.faireSend);      // 1 byte
@@ -3237,7 +3350,7 @@ namespace RLComm
                 w.Write((short)JassStateCache.teamScore[0]);                // score_team0 (int16)
                 w.Write((short)JassStateCache.teamScore[1]);                // score_team1 (int16)
                 w.Write((short)TARGET_SCORE);                               // target_score (int16)
-                w.Write((short)_cRankStock);                                // c_rank_stock (int16)
+                w.Write((short)0);                                              // c_rank_stock field (deprecated, now per-player faire tracking)
                 w.Write(0f);                                                // _reserved (float)
 
                 // ---- UnitState x 12 ----
@@ -3328,32 +3441,40 @@ namespace RLComm
                     try { isInvuln = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)_buffInvuln) > 0; } catch { }
 
                     // Seal data
-                    var sealData = GetSealItem(u);
+                    var sealData = GetSealItem(i);
                     int sealCharges = sealData.charges;
 
                     // Gold
                     int gold = GetPlayerGold(i);
 
-                    // Visibility: is this unit visible to the ENEMY team?
-                    bool visibleToEnemy = true;
-                    int enemyCheckPid = i < 6 ? 6 : 0;
-                    if (_fogInitialized)
+                    // Visibility: per-player bitmask (bit j = player j can see this unit)
+                    ushort visibleMask = 0;
+                    for (int p = 0; p < MAX_PLAYERS; p++)
                     {
-                        // Fog bitmap direct read: zero native calls
-                        visibleToEnemy = IsUnitVisibleViaFog(x, y, enemyCheckPid);
-                    }
-                    else
-                    {
-                        try
+                        if (p == i) continue; // skip self
+                        bool canSee = true;
+                        if (_fogInitialized)
                         {
-                            if (players[enemyCheckPid].Handle != IntPtr.Zero)
-                                visibleToEnemy = Natives.IsUnitVisible(u, players[enemyCheckPid]);
+                            canSee = IsUnitVisibleViaFog(x, y, p);
                         }
-                        catch { }
+                        else
+                        {
+                            try
+                            {
+                                if (players[p].Handle != IntPtr.Zero)
+                                    canSee = Natives.IsUnitVisible(u, players[p]);
+                            }
+                            catch { canSee = false; }
+                        }
+                        if (canSee) visibleMask |= (ushort)(1 << p);
                     }
 
                     // Build action mask (zero-alloc packed bits)
                     var actionMask = BuildActionMaskBits(i, u, typeId, lv, alive, mp, gold, skillPoints, statPoints, gameTime);
+
+                    // Debug: log mask values for p0 every 100 ticks
+                    if (i == 0 && tickCount % 100 == 1)
+                        Log($"[RLComm] DEBUG Mask p0: skillPts={skillPoints} statPts={statPoints} skillLvl=0x{actionMask.skillLevelup:X2} statUpg=0x{actionMask.statUpgrade:X4} attr=0x{actionMask.attribute:X2}");
 
                     // ---- Write UnitState ----
                     // Identity (6 bytes)
@@ -3437,11 +3558,11 @@ namespace RLComm
                     w.Write((short)FAIRE_CAP);                              // faire_cap (int16)
                     w.Write((byte)0); w.Write((byte)0);                     // _pad_econ[2]
 
-                    // Flags (2 bytes)
+                    // Flags (3 bytes)
                     w.Write(_alarmState[i] ? (byte)1 : (byte)0);           // enemy_alarm (uint8)
-                    w.Write(visibleToEnemy ? (byte)1 : (byte)0);           // visible (uint8)
+                    w.Write(visibleMask);                                   // visible_mask (uint16)
 
-                    // Action Masks (14 bytes, bit-packed)
+                    // Action Masks (16 bytes, bit-packed)
                     WriteActionMaskBinary(w, actionMask);
                 }
 
@@ -3599,10 +3720,10 @@ namespace RLComm
             // Economy (8 bytes)
             w.Write((int)0); w.Write((short)FAIRE_CAP); w.Write((byte)0); w.Write((byte)0);
 
-            // Flags (2 bytes)
-            w.Write((byte)0); w.Write((byte)0);
+            // Flags (3 bytes)
+            w.Write((byte)0); w.Write((ushort)0);
 
-            // Action Masks (11 bytes) - empty mask
+            // Action Masks (13 bytes) - empty mask
             // skill: bit 0 = none=true
             w.Write((byte)0x01);
             // unit_target: bits 12,13 = true
@@ -3613,8 +3734,8 @@ namespace RLComm
             w.Write((ushort)0x0001);
             // attribute: bit 0 = true
             w.Write((byte)0x01);
-            // item_buy: bit 0 = true
-            w.Write((ushort)0x0001);
+            // item_buy: bit 0 = true (uint32)
+            w.Write((uint)0x00000001);
             // item_use: bit 0 = true
             w.Write((byte)0x01);
             // seal_use: bit 0 = true
@@ -3689,7 +3810,7 @@ namespace RLComm
             }
         }
 
-        /// <summary>Write action masks as bit-packed bytes (14 bytes total) -- LEGACY JObject version, kept for JSON debug path compatibility</summary>
+        /// <summary>Write action masks as bit-packed bytes (16 bytes total) -- LEGACY JObject version, kept for JSON debug path compatibility</summary>
         private static void WriteActionMaskBinary(BinaryWriter w, JObject actionMask)
         {
             // mask_skill (8 bits)
@@ -3727,11 +3848,11 @@ namespace RLComm
                 if (atArr[b].Value<bool>()) maskAttr |= (byte)(1 << b);
             w.Write(maskAttr);
 
-            // mask_item_buy (16 bits)
-            ushort maskItemBuy = 0;
+            // mask_item_buy (32 bits → 17 used)
+            uint maskItemBuy = 0;
             JArray ibArr = (JArray)actionMask["item_buy"];
-            for (int b = 0; b < 16 && b < ibArr.Count; b++)
-                if (ibArr[b].Value<bool>()) maskItemBuy |= (ushort)(1 << b);
+            for (int b = 0; b < 32 && b < ibArr.Count; b++)
+                if (ibArr[b].Value<bool>()) maskItemBuy |= (uint)(1 << b);
             w.Write(maskItemBuy);
 
             // mask_item_use (8 bits)
@@ -4156,6 +4277,13 @@ namespace RLComm
                 // 1 = Attack
                 if (skill == 1)
                 {
+                    // Block friendly-fire: attack on ally unit targets (0-5)
+                    if (unitTarget < 6)
+                    {
+                        _skillStatFailed++;
+                        return false;
+                    }
+
                     JassUnit target = ResolveTargetUnit(idx, unitTarget, myTeamBase, enemyTeamBase);
                     if (target.Handle != IntPtr.Zero && unitTarget <= 12)
                     {
@@ -4165,10 +4293,8 @@ namespace RLComm
                     }
                     else if (unitTarget == 13) // point mode
                     {
-                        float tx = cx + pointX * 600f;
-                        float ty = cy + pointY * 600f;
-                        tx = Clampf(tx, MAP_MIN_X + 64, MAP_MAX_X - 64);
-                        ty = Clampf(ty, MAP_MIN_Y + 64, MAP_MAX_Y - 64);
+                        float tx, ty;
+                        DecodePolarPoint(pointX, pointY, 600f, cx, cy, out tx, out ty);
                         Natives.IssuePointOrder(u, "attack", tx, ty);
                         _skillStatAttack++;
                         return true;
@@ -4201,13 +4327,27 @@ namespace RLComm
                 // For non-ANcl: orderId = aord override or base type inherent order
                 string orderStr = si.orderId;
 
+                // Skip abilities with no order string (ANfd, AIh2, Afod base types)
+                // These cannot be issued via IssueOrder - need map patch or JASS relay
+                if (string.IsNullOrEmpty(orderStr))
+                {
+                    _skillStatFailed++;
+                    _recentSkillLog[_recentSkillIdx % 20] = $"p{idx}{slotName}:NOORDER({si.abilId:X})";
+                    _recentSkillIdx++;
+                    return false;
+                }
+
+                bool orderOk = false;
+
                 if (si.targetType == 0) // immediate (no target)
                 {
                     bool ok = Natives.IssueImmediateOrder(u, orderStr);
                     if (ok)
                     {
+                        _targetSkillGraceTick[idx] = tickCount; // prevent next-tick move from cancelling channel
                         _skillStatImmediate++;
                         _recentSkillLog[_recentSkillIdx % 20] = $"p{idx}{slotName}imm({orderStr}):OK";
+                        orderOk = true;
                     }
                     else
                     {
@@ -4237,6 +4377,7 @@ namespace RLComm
                         {
                             _skillStatUnitTarget++;
                             _recentSkillLog[_recentSkillIdx % 20] = $"p{idx}{slotName}utgt({orderStr}):OK";
+                            orderOk = true;
                         }
                         else
                         {
@@ -4256,9 +4397,9 @@ namespace RLComm
                 else if (si.targetType == 2) // point target
                 {
                     float tx, ty;
-                    if (unitTarget >= 0 && unitTarget <= 11)
+                    if (unitTarget >= 6 && unitTarget <= 11)
                     {
-                        // Target a hero's position
+                        // Target an enemy hero's position (ally positions excluded — wasteful for point skills)
                         JassUnit target = ResolveTargetUnit(idx, unitTarget, myTeamBase, enemyTeamBase);
                         if (target.Handle != IntPtr.Zero)
                         {
@@ -4267,24 +4408,21 @@ namespace RLComm
                         }
                         else
                         {
-                            tx = cx + pointX * 600f;
-                            ty = cy + pointY * 600f;
+                            DecodePolarPoint(pointX, pointY, si.maxRange, cx, cy, out tx, out ty);
                         }
                     }
                     else // unitTarget == 12 (self), 13 (point_mode), or default
                     {
-                        tx = cx + pointX * 600f;
-                        ty = cy + pointY * 600f;
+                        DecodePolarPoint(pointX, pointY, si.maxRange, cx, cy, out tx, out ty);
                     }
 
-                    tx = Clampf(tx, MAP_MIN_X + 64, MAP_MAX_X - 64);
-                    ty = Clampf(ty, MAP_MIN_Y + 64, MAP_MAX_Y - 64);
                     bool ok = Natives.IssuePointOrder(u, orderStr, tx, ty);
                     _targetSkillGraceTick[idx] = tickCount;
                     if (ok)
                     {
                         _skillStatPointTarget++;
                         _recentSkillLog[_recentSkillIdx % 20] = $"p{idx}{slotName}pt({orderStr},{tx:F0},{ty:F0}):OK";
+                        orderOk = true;
                     }
                     else
                     {
@@ -4297,11 +4435,30 @@ namespace RLComm
                 }
 
                 // Track cooldown
-                float maxCd = 0f;
-                if (abilLevel > 0 && abilLevel <= si.maxCd.Length)
-                    maxCd = si.maxCd[abilLevel - 1];
-                if (maxCd > 0f)
-                    _cdTracker.OnSkillUsed(idx, slotIdx, gameTime, maxCd);
+                if (orderOk)
+                {
+                    float maxCd = 0f;
+                    if (abilLevel > 0 && abilLevel <= si.maxCd.Length)
+                        maxCd = si.maxCd[abilLevel - 1];
+                    if (maxCd > 0f)
+                    {
+                        _cdTracker.OnSkillUsed(idx, slotIdx, gameTime, maxCd);
+                        // Shared cooldown group: apply CD to all skills in same group
+                        if (si.sharedCdGroup > 0)
+                        {
+                            for (int gs = 0; gs < hdata.skills.Length; gs++)
+                            {
+                                if (gs != slotIdx && hdata.skills[gs].sharedCdGroup == si.sharedCdGroup)
+                                    _cdTracker.OnSkillUsed(idx, gs, gameTime, maxCd);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Prevent retry spam: block this skill for 5s after failure
+                    _cdTracker.OnSkillUsed(idx, slotIdx, gameTime, 5.0f);
+                }
 
                 return true;
             }
@@ -4380,7 +4537,10 @@ namespace RLComm
                     int slotIdx = skillLevelup - 1; // 0=Q,1=W,2=E,3=R
                     if (slotIdx >= hdata.skills.Length || hdata.skills[slotIdx].abilId == 0) return;
 
-                    Natives.SelectHeroSkill(u, (JassObjectId)hdata.skills[slotIdx].abilId);
+                    int learnId = hdata.skills[slotIdx].learnAbilId != 0
+                        ? hdata.skills[slotIdx].learnAbilId
+                        : hdata.skills[slotIdx].abilId;
+                    Natives.SelectHeroSkill(u, (JassObjectId)learnId);
                     Log($"[RLComm] SkillLevelup: p{idx} slot={slotIdx}");
                 }
                 else if (skillLevelup == 5)
@@ -4420,6 +4580,22 @@ namespace RLComm
         /// 1=str, 2=agi, 3=int, 4=HP regen, 5=MP regen, 6=faire regen,
         /// 7=attack, 8=defense, 9=movespeed
         /// </summary>
+        // Grail ability order strings: index = statUpgrade (1-9)
+        // Issuing these on the grail unit triggers JASS s__GrailSupport_onUpgrade,
+        // which handles stat modification, s__User_upgradeList tracking, point deduction, and UI display.
+        private static readonly string[] GRAIL_ORDER_STRINGS = {
+            "",              // 0: unused
+            "absorb",        // 1: STR+1      (A02W, AAns)
+            "acidbomb",      // 2: AGI+1      (A03D, AAns)
+            "ambush",        // 3: INT+1      (A03E, AAns)
+            "slow",          // 4: HP regen   (A03Y, AAns)
+            "blizzard",      // 5: MP regen   (A03Z, AAns)
+            "unrobogoblin",  // 6: Gold regen (A0A9, AAns)
+            "avatar",        // 7: Attack+3   (A03W, AAns)
+            "animatedead",   // 8: Defense+2  (A03X, AAns)
+            "firebolt",      // 9: MoveSpd+5  (A04Y, AAns)
+        };
+
         private static void ExecuteStatUpgrade(int idx, JassUnit u, int statUpgrade)
         {
             if (statUpgrade == 0) return;
@@ -4439,72 +4615,23 @@ namespace RLComm
                     return;
                 }
 
-                JassPlayer player = Natives.Player(idx);
+                // Issue order on the grail unit — triggers JASS GrailSupport_onUpgrade
+                // which handles SetHeroStr/Agi/Int, SetPlayerTechResearched, s__User_upgrade,
+                // s__User_modPoint (point deduction), and F3+C display tracking.
+                JassUnit grail = _grailUnits[idx];
+                string orderStr = GRAIL_ORDER_STRINGS[statUpgrade];
+                bool ok = Natives.IssueImmediateOrder(grail, orderStr);
 
-                switch (statUpgrade)
+                if (ok)
                 {
-                    case 1: // STR +1
-                    {
-                        int curStr = (int)Natives.GetHeroStr(u, false);
-                        Natives.SetHeroStr(u, curStr + 1, true);
-                        break;
-                    }
-                    case 2: // AGI +1
-                    {
-                        int curAgi = (int)Natives.GetHeroAgi(u, false);
-                        Natives.SetHeroAgi(u, curAgi + 1, true);
-                        break;
-                    }
-                    case 3: // INT +1
-                    {
-                        int curInt = (int)Natives.GetHeroInt(u, false);
-                        Natives.SetHeroInt(u, curInt + 1, true);
-                        break;
-                    }
-                    case 4: // HP regen: R001
-                    {
-                        int curLv = (int)Natives.GetPlayerTechCount(player, FourCC("R001"), true);
-                        Natives.SetPlayerTechResearched(player, FourCC("R001"), curLv + 1);
-                        break;
-                    }
-                    case 5: // MP regen: R002
-                    {
-                        int curLv = (int)Natives.GetPlayerTechCount(player, FourCC("R002"), true);
-                        Natives.SetPlayerTechResearched(player, FourCC("R002"), curLv + 1);
-                        break;
-                    }
-                    case 6: // Faire regen (tracked by JASS, just decrement points)
-                    {
-                        // Auto-applied by JASS system
-                        break;
-                    }
-                    case 7: // Attack: R005
-                    {
-                        int curLv = (int)Natives.GetPlayerTechCount(player, FourCC("R005"), true);
-                        Natives.SetPlayerTechResearched(player, FourCC("R005"), curLv + 1);
-                        break;
-                    }
-                    case 8: // Defense: R000
-                    {
-                        int curLv = (int)Natives.GetPlayerTechCount(player, FourCC("R000"), true);
-                        Natives.SetPlayerTechResearched(player, FourCC("R000"), curLv + 1);
-                        break;
-                    }
-                    case 9: // Move speed: R00A
-                    {
-                        int curLv = (int)Natives.GetPlayerTechCount(player, FourCC("R00A"), true);
-                        Natives.SetPlayerTechResearched(player, FourCC("R00A"), curLv + 1);
-                        break;
-                    }
+                    // Update local cache (JASS already handled the actual upgrade)
+                    JassStateCache.upgrades[idx, upgradeIdx]++;
+                    Log($"[RLComm] StatUpgrade: p{idx} type={statUpgrade} order={orderStr} newLevel={JassStateCache.upgrades[idx, upgradeIdx]}");
                 }
-
-                // Decrement grail slot 0 charges (stat points)
-                DecrStatPoints(idx);
-
-                // Update local cache
-                JassStateCache.upgrades[idx, upgradeIdx]++;
-
-                Log($"[RLComm] StatUpgrade: p{idx} type={statUpgrade} newLevel={JassStateCache.upgrades[idx, upgradeIdx]}");
+                else
+                {
+                    Log($"[RLComm] StatUpgrade: p{idx} type={statUpgrade} order={orderStr} FAILED");
+                }
             }
             catch (Exception ex)
             {
@@ -4514,8 +4641,23 @@ namespace RLComm
 
         /// <summary>
         /// Head 6: Execute attribute selection: 0=none, 1-4=A/B/C/D
-        /// Simplified: just track the acquisition. Actual attribute effect requires JASS integration.
+        /// Attribute abilities live on the grail's spellbook. Issuing the order on the
+        /// grail triggers JASS attributeFirst/Second/Third/Fourth handlers for the hero.
+        /// JASS handles stat point deduction, attribute effects, and tracking.
+        /// No sequential constraint — any attribute can be chosen freely.
         /// </summary>
+
+        // Order strings per attribute slot (base types: Absk=berserk, Aroa=roar, Atau=taunt, ACwe=web)
+        // All heroes share the same base type per slot, so the order string is uniform.
+        // Exception: SaberAlter (H007) attr3 uses ANcl with order "nagabuild" instead of "taunt".
+        private static readonly string[] ATTR_ORDER_STRINGS = {
+            "",          // 0: unused
+            "berserk",   // 1: attr1 (base=Absk)
+            "roar",      // 2: attr2 (base=Aroa)
+            "taunt",     // 3: attr3 (base=Atau)
+            "web",       // 4: attr4 (base=ACwe)
+        };
+
         private static void ExecuteAttribute(int idx, JassUnit u, int attribute)
         {
             if (attribute == 0) return;
@@ -4523,22 +4665,32 @@ namespace RLComm
 
             try
             {
-                int attrCount = JassStateCache.attrCount[idx];
-                // Sequential acquisition check
-                if (attribute != attrCount + 1)
+                // Check grail exists
+                if (!_grailRegistered[idx])
                 {
-                    Log($"[RLComm] Attribute: p{idx} attr={attribute} rejected (current count={attrCount}, must acquire {attrCount + 1})");
+                    Log($"[RLComm] Attribute: p{idx} no grail registered");
                     return;
                 }
 
-                // Check stat points cost
-                HeroData hdata;
                 int typeId = (int)Natives.GetUnitTypeId(u);
-                int cost = 10; // default cost
-                if (_heroDataTable.TryGetValue(typeId, out hdata) && hdata.attributeCost != null && attribute - 1 < hdata.attributeCost.Length)
+                HeroData hdata;
+                bool hasData = _heroDataTable.TryGetValue(typeId, out hdata);
+
+                // Check if already acquired
+                // Exception: Lancelot (H03M) attr4 can be acquired twice (JASS returns false on 1st use, keeping trigger alive)
+                bool isLancelotAttr4 = (attribute == 4 && typeId == FourCC("H03M"));
+                int acquireCount = JassStateCache.attrAcquired[idx, attribute];
+                int maxAcquire = isLancelotAttr4 ? 2 : 1;
+                if (acquireCount >= maxAcquire)
                 {
-                    cost = hdata.attributeCost[attribute - 1];
+                    Log($"[RLComm] Attribute: p{idx} attr={attribute} already acquired ({acquireCount}/{maxAcquire})");
+                    return;
                 }
+
+                // Check stat points cost (pre-validation; JASS handles actual deduction)
+                int cost = 10; // default
+                if (hasData && hdata.attributeCost != null && attribute - 1 < hdata.attributeCost.Length)
+                    cost = hdata.attributeCost[attribute - 1];
 
                 int statPts = GetStatPoints(idx);
                 if (statPts < cost)
@@ -4547,15 +4699,27 @@ namespace RLComm
                     return;
                 }
 
-                // Decrement stat points
-                for (int c = 0; c < cost; c++)
-                    DecrStatPoints(idx);
+                // Determine order string (SaberAlter attr3 exception)
+                string orderStr = ATTR_ORDER_STRINGS[attribute];
+                if (attribute == 3 && typeId == FourCC("H007"))
+                    orderStr = "nagabuild"; // SaberAlter attr3 uses ANcl instead of Atau
 
-                // Track acquisition
-                JassStateCache.attrCount[idx]++;
+                // Issue order on grail — attribute abilities are in the grail's spellbook.
+                // Triggers JASS EVENT_UNIT_SPELL_EFFECT on grail → attributeFirst/Second/Third/Fourth
+                // which applies effects, deducts stat points via s__User_modPoint, and removes the attribute unit.
+                JassUnit grail = _grailUnits[idx];
+                bool ok = Natives.IssueImmediateOrder(grail, orderStr);
 
-                // TODO: actual attribute effect requires JASS trigger integration
-                Log($"[RLComm] Attribute: p{idx} acquired attr={attribute} (cost={cost}, total={JassStateCache.attrCount[idx]})");
+                if (ok)
+                {
+                    JassStateCache.attrAcquired[idx, attribute]++;
+                    JassStateCache.attrCount[idx]++;
+                    Log($"[RLComm] Attribute: p{idx} attr={attribute} order={orderStr} ok=true (acquired={JassStateCache.attrAcquired[idx, attribute]}/{maxAcquire}, total={JassStateCache.attrCount[idx]})");
+                }
+                else
+                {
+                    Log($"[RLComm] Attribute: p{idx} attr={attribute} order={orderStr} ok=false");
+                }
             }
             catch (Exception ex)
             {
@@ -4564,7 +4728,7 @@ namespace RLComm
         }
 
         /// <summary>
-        /// Head 7: Execute item buy: 0=none, 1-4=C-rank tiers, 5-15=specific items
+        /// Head 7: Execute item buy: 0=none, 1-4=faire (기사회생) options, 5-15=specific items
         /// </summary>
         private static void ExecuteItemBuy(int idx, JassUnit u, int itemBuy)
         {
@@ -4574,33 +4738,75 @@ namespace RLComm
             {
                 JassPlayer player = Natives.Player(idx);
 
-                if (itemBuy >= 1 && itemBuy <= 4)
+                if (itemBuy >= 1 && itemBuy <= 6)
                 {
-                    // C-rank item buy (deduct stock)
-                    int stockCost = _cRankStockCosts[itemBuy];
-                    if (_cRankStock < stockCost)
+                    // Faire (기사회생) -- issue ability order on faire unit
+                    int fairesEarned = _advCount[idx] / 7;
+                    if (fairesEarned <= _faireUsed[idx])
                     {
-                        Log($"[RLComm] ItemBuy: p{idx} C-rank out of stock ({_cRankStock} < {stockCost})");
+                        Log($"[RLComm] Faire: p{idx} not available (adv={_advCount[idx]}, used={_faireUsed[idx]})");
                         return;
                     }
-                    _cRankStock -= stockCost;
 
-                    // Create C-rank scroll items based on tier
-                    // Tier 1=C-rank scroll, Tier 2=B-rank, Tier 3=A-rank, Tier 4=S-rank
-                    string[] cRankTypeIds = { "", "I00C", "I009", "I006", "I00D" };
-                    if (itemBuy < cRankTypeIds.Length && cRankTypeIds[itemBuy].Length > 0)
+                    // Map idx to faire ability order strings
+                    // 1=A04B(골드토큰,flare), 2=A04F(+3레벨,heal), 3=A0DD(+12스탯,sanctuary),
+                    // 4=A04C(항마력,frenzy), 5=A04D(아이템+3000g,frostnova), 6=A00U(무적결계,holybolt)
+                    string[] faireOrders = { "", "flare", "heal", "sanctuary", "frenzy", "frostnova", "holybolt" };
+                    string orderStr = faireOrders[itemBuy];
+
+                    // Find faire unit (h02Q or h02R) owned by this player
+                    JassUnit faireUnit = default(JassUnit);
+                    bool found = false;
+                    try
                     {
-                        float ux = Natives.GetUnitX(u);
-                        float uy = Natives.GetUnitY(u);
-                        JassItem newItem = Natives.CreateItem((JassObjectId)FourCC(cRankTypeIds[itemBuy]), ux, uy);
-                        if (newItem.Handle != IntPtr.Zero)
+                        JassPlayer jp = Natives.Player(idx);
+                        JassGroup g = Natives.CreateGroup();
+                        Natives.GroupEnumUnitsOfPlayer(g, jp, default(JassBooleanExpression));
+                        JassUnit gu;
+                        while ((gu = Natives.FirstOfGroup(g)).Handle != IntPtr.Zero)
                         {
-                            Natives.UnitAddItem(u, newItem);
+                            int utid = (int)Natives.GetUnitTypeId(gu);
+                            if (utid == FourCC("h02Q") || utid == FourCC("h02R"))
+                            {
+                                faireUnit = gu;
+                                found = true;
+                                break;
+                            }
+                            Natives.GroupRemoveUnit(g, gu);
                         }
+                        Natives.DestroyGroup(g);
                     }
-                    Log($"[RLComm] ItemBuy: p{idx} C-rank tier={itemBuy} stock={_cRankStock}");
+                    catch (Exception ex)
+                    {
+                        Log($"[RLComm] Faire unit search error p{idx}: {ex.Message}");
+                    }
+
+                    if (!found)
+                    {
+                        Log($"[RLComm] Faire: p{idx} no faire unit found (adv={_advCount[idx]})");
+                        return;
+                    }
+
+                    // Issue the ability order on the faire unit
+                    bool ok = false;
+                    try
+                    {
+                        ok = Natives.IssueImmediateOrder(faireUnit, orderStr);
+                    }
+                    catch { }
+
+                    if (ok)
+                    {
+                        _faireUsed[idx]++;
+                        Log($"[RLComm] Faire: p{idx} used option {itemBuy} ({orderStr}) adv={_advCount[idx]} used={_faireUsed[idx]}");
+                    }
+                    else
+                    {
+                        Log($"[RLComm] Faire: p{idx} order failed ({orderStr})");
+                    }
+                    return;
                 }
-                else if (itemBuy >= 5 && itemBuy <= 15 && itemBuy < _shopItems.Length)
+                else if (itemBuy >= 7 && itemBuy <= 16 && itemBuy < _shopItems.Length)
                 {
                     ShopItem si = _shopItems[itemBuy];
                     int gold = GetPlayerGold(idx);
@@ -4659,10 +4865,8 @@ namespace RLComm
                 // Try point use if point mode selected
                 if (unitTarget == 13)
                 {
-                    float tx = cx + pointX * 600f;
-                    float ty = cy + pointY * 600f;
-                    tx = Clampf(tx, MAP_MIN_X + 64, MAP_MAX_X - 64);
-                    ty = Clampf(ty, MAP_MIN_Y + 64, MAP_MAX_Y - 64);
+                    float tx, ty;
+                    DecodePolarPoint(pointX, pointY, 600f, cx, cy, out tx, out ty);
                     Natives.UnitUseItemPoint(u, itm, tx, ty);
                 }
                 else if (unitTarget >= 0 && unitTarget <= 12)
@@ -4696,6 +4900,19 @@ namespace RLComm
         /// <summary>
         /// Head 9: Execute seal use: 0=none, 1=first_activate, 2=cd_reset, 3=hp_recover, 4=mp_recover, 5=revive, 6=teleport
         /// </summary>
+        // Order strings for command seal abilities on the grail unit.
+        // These trigger JASS s__CommandSeal_onCast which handles charges, cooldowns,
+        // stat point costs, and the actual effects (HP/MP recover, revive, teleport, etc.)
+        private static readonly string[] SEAL_ORDER_STRINGS = {
+            "",                  // 0: unused
+            "carrionscarabsoff", // 1: First Activate  (A094, ANcl)
+            "blackarrowoff",     // 2: CD Reset        (A043, AAns)
+            "coldarrows",        // 3: HP Recover      (A044, AAns)
+            "doom",              // 4: MP Recover      (A05Q, ANcl)
+            "curse",             // 5: Revive          (A0DU, ANcl)
+            "curseoff",          // 6: Teleport        (A0DY, ANcl, point target)
+        };
+
         private static void ExecuteSealUse(int idx, JassUnit u, int sealUse, float pointX, float pointY)
         {
             if (sealUse == 0) return;
@@ -4703,9 +4920,15 @@ namespace RLComm
 
             try
             {
-                // Check seal charges
-                var sealData = GetSealItem(u);
-                JassItem sealItem = sealData.item;
+                // Validate: grail unit must exist
+                if (!_grailRegistered[idx])
+                {
+                    Log($"[RLComm] SealUse: p{idx} no grail registered");
+                    return;
+                }
+
+                // Validate: check seal charges (prevent wasting actions)
+                var sealData = GetSealItem(idx);
                 int sealCharges = sealData.charges;
 
                 bool isFirstActive = JassStateCache.firstActive[idx] != 0;
@@ -4717,82 +4940,38 @@ namespace RLComm
                     return;
                 }
 
-                // Check cooldown
+                // Validate: check cooldown (skip for first activate)
                 if (JassStateCache.sealCd[idx] > 0 && sealUse != 1)
                 {
                     Log($"[RLComm] SealUse: p{idx} on cooldown ({JassStateCache.sealCd[idx]})");
                     return;
                 }
 
-                // Deduct charges
-                if (sealItem.Handle != IntPtr.Zero)
+                // Issue order on grail unit — triggers JASS s__CommandSeal_onCast
+                // which handles charge deduction, stat point cost, cooldowns, and effects.
+                JassUnit grail = _grailUnits[idx];
+                string orderStr = SEAL_ORDER_STRINGS[sealUse];
+                bool ok;
+
+                if (sealUse == 6) // Teleport — point target (A0DY, Ncl2=2)
                 {
-                    Natives.SetItemCharges(sealItem, sealCharges - cost);
+                    float tx = MAP_MIN_X + (pointX + 1f) * 0.5f * (MAP_MAX_X - MAP_MIN_X);
+                    float ty = MAP_MIN_Y + (pointY + 1f) * 0.5f * (MAP_MAX_Y - MAP_MIN_Y);
+                    tx = Clampf(tx, MAP_MIN_X + 64, MAP_MAX_X - 64);
+                    ty = Clampf(ty, MAP_MIN_Y + 64, MAP_MAX_Y - 64);
+                    ok = Natives.IssuePointOrder(grail, orderStr, tx, ty);
+                    Log($"[RLComm] SealUse: p{idx} teleport order={orderStr} to ({tx:F0},{ty:F0}) ok={ok}");
+                }
+                else // All other seals — immediate order
+                {
+                    ok = Natives.IssueImmediateOrder(grail, orderStr);
+                    Log($"[RLComm] SealUse: p{idx} type={sealUse} order={orderStr} ok={ok}");
                 }
 
-                switch (sealUse)
+                // After JASS processes CD reset, also clear our local cooldown tracker
+                if (ok && sealUse == 2)
                 {
-                    case 1: // First seal activate
-                    {
-                        // Issue seal ability via string order (Ncl6 patched to "sealact")
-                        try
-                        {
-                            Natives.IssueTargetOrder(u, "sealact", u);
-                        }
-                        catch { }
-                        Log($"[RLComm] SealUse: p{idx} first seal activate");
-                        break;
-                    }
-                    case 2: // Cooldown reset
-                    {
-                        Natives.UnitResetCooldown(u);
-                        _cdTracker.ResetAll(idx);
-                        Log($"[RLComm] SealUse: p{idx} cd reset");
-                        break;
-                    }
-                    case 3: // HP recover
-                    {
-                        float maxHp = Natives.GetUnitState(u, JassUnitState.MaxLife);
-                        Natives.SetUnitState(u, JassUnitState.Life, maxHp);
-                        Log($"[RLComm] SealUse: p{idx} hp recover");
-                        break;
-                    }
-                    case 4: // MP recover
-                    {
-                        float maxMp = Natives.GetUnitState(u, JassUnitState.MaxMana);
-                        Natives.SetUnitState(u, JassUnitState.Mana, maxMp);
-                        Log($"[RLComm] SealUse: p{idx} mp recover");
-                        break;
-                    }
-                    case 5: // Revive
-                    {
-                        float spawnX = _spawnX[idx];
-                        float spawnY = _spawnY[idx];
-                        Natives.ReviveHero(u, spawnX, spawnY, true);
-                        // Set HP to 50%, MP to 30%
-                        try
-                        {
-                            float maxHp = Natives.GetUnitState(u, JassUnitState.MaxLife);
-                            float maxMp = Natives.GetUnitState(u, JassUnitState.MaxMana);
-                            Natives.SetUnitState(u, JassUnitState.Life, maxHp * 0.5f);
-                            Natives.SetUnitState(u, JassUnitState.Mana, maxMp * 0.3f);
-                        }
-                        catch { }
-                        Log($"[RLComm] SealUse: p{idx} revive at ({spawnX},{spawnY})");
-                        break;
-                    }
-                    case 6: // Teleport
-                    {
-                        // Map pointX/pointY from [-1,1] to map coordinates
-                        float tx = MAP_MIN_X + (pointX + 1f) * 0.5f * (MAP_MAX_X - MAP_MIN_X);
-                        float ty = MAP_MIN_Y + (pointY + 1f) * 0.5f * (MAP_MAX_Y - MAP_MIN_Y);
-                        tx = Clampf(tx, MAP_MIN_X + 64, MAP_MAX_X - 64);
-                        ty = Clampf(ty, MAP_MIN_Y + 64, MAP_MAX_Y - 64);
-                        Natives.SetUnitX(u, tx);
-                        Natives.SetUnitY(u, ty);
-                        Log($"[RLComm] SealUse: p{idx} teleport to ({tx:F0},{ty:F0})");
-                        break;
-                    }
+                    _cdTracker.ResetAll(idx);
                 }
             }
             catch (Exception ex)
@@ -5178,7 +5357,6 @@ namespace RLComm
             _fogInitialized = false;
             _fogInitFailed = false;
             _fogBitmapPtr = IntPtr.Zero;
-            _cRankStock = 8;
             _eventQueue.Clear();
             _cdTracker.Clear();
             _faireRequests.Clear();
@@ -5189,8 +5367,11 @@ namespace RLComm
                 heroHandleIds[i] = 0;
                 _grailRegistered[i] = false;
                 _alarmState[i] = false;
+                _advCount[i] = 0;
+                _faireUsed[i] = 0;
                 _prevX[i] = 0f;
                 _prevY[i] = 0f;
+                for (int s = 0; s < 5; s++) JassStateCache.attrAcquired[i, s] = 0;
             }
 
             // ---- UDP setup ----
@@ -5400,6 +5581,7 @@ namespace RLComm
                 heroHandleIds[i] = 0;
                 _grailRegistered[i] = false;
                 _alarmState[i] = false;
+                for (int s = 0; s < 5; s++) JassStateCache.attrAcquired[i, s] = 0;
             }
         }
 

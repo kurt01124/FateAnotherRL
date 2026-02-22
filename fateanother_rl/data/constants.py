@@ -22,8 +22,8 @@ class N:
     game_time = 1800.0
 
 HERO_IDS = [
-    "H000", "H001", "H002", "H003", "H005", "H006",
-    "H007", "H008", "H009", "H028", "H03M", "H04D",
+    "H000", "H001", "H002", "H03M", "H028", "H009",  # Team 0
+    "H007", "H005", "H003", "H006", "H004", "H008",  # Team 1
 ]
 HERO_TO_IDX = {h: i for i, h in enumerate(HERO_IDS)}
 NUM_HEROES = 12
@@ -35,7 +35,7 @@ DISCRETE_HEADS = {
     "skill_levelup": 6,
     "stat_upgrade": 10,
     "attribute": 5,
-    "item_buy": 16,
+    "item_buy": 17,
     "item_use": 7,
     "seal_use": 7,
     "faire_send": 6,
@@ -48,6 +48,6 @@ SKILL_SLOTS = ["Q", "W", "E", "R", "D", "F"]
 # Observation dimensions (used by model config)
 SELF_DIM = 77    # hero_id(12) included
 ALLY_DIM = 37
-ENEMY_DIM = 41
+ENEMY_DIM = 43
 GLOBAL_DIM = 6
 GRID_CHANNELS = 3

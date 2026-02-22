@@ -27,25 +27,20 @@ def main():
         print(f"[init_models] All {len(HERO_IDS)} models already exist, skipping.")
         return
 
-    print(f"[init_models] Generating {len(HERO_IDS)} initial models...")
+    print(f"[init_models] Generating {len(HERO_IDS)} individual hero models...")
 
-    # Create one model with random weights, script it, save for each hero
-    model = FateModelExport()
-    model = model.to(args.device).eval()
-    model.lstm.flatten_parameters()
-    scripted = torch.jit.script(model)
-
+    # Create separate model per hero with independent random weights
     for hero_id in HERO_IDS:
+        model = FateModelExport()
+        model = model.to(args.device).eval()
+        model.lstm.flatten_parameters()
+        scripted = torch.jit.script(model)
+
         path = os.path.join(args.model_dir, f"{hero_id}.pt")
         scripted.save(path)
         print(f"  {path}")
 
-    # Also save as model_latest.pt (shared model for C++ inference server)
-    latest_path = os.path.join(args.model_dir, "model_latest.pt")
-    scripted.save(latest_path)
-    print(f"  {latest_path} (shared)")
-
-    print(f"[init_models] Done! {len(HERO_IDS) + 1} models saved to {args.model_dir}")
+    print(f"[init_models] Done! {len(HERO_IDS)} hero models saved to {args.model_dir}")
 
 
 if __name__ == "__main__":

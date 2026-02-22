@@ -29,7 +29,7 @@ class FateModel(nn.Module):
         self,
         self_dim: int = 77,
         ally_dim: int = 37,
-        enemy_dim: int = 41,
+        enemy_dim: int = 43,
         global_dim: int = 6,
         grid_channels: int = 3,
         hidden_dim: int = 256,

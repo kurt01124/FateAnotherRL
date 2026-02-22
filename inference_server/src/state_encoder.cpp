@@ -221,7 +221,7 @@ static void encode_self(const UnitState& u, float* out) {
 // ============================================================
 // Encode ally unit -> (ALLY_DIM,) float vector
 // ============================================================
-static void encode_ally(const UnitState& u, float* out) {
+static void encode_ally(const UnitState& u, float my_x, float my_y, float* out) {
     std::memset(out, 0, ALLY_DIM * sizeof(float));
 
     if (!u.alive) {
@@ -276,14 +276,22 @@ static void encode_ally(const UnitState& u, float* out) {
     out[idx++] = u.vel_x / 500.0f;
     out[idx++] = u.vel_y / 500.0f;
 
-    // Padding (5) to reach ALLY_DIM = 37
-    // idx should be 32 here, remaining 5 are zeros from memset
+    // idx = 32 here. Padding slots [32],[33] used for relative polar coords.
+    {
+        float dx = u.x - my_x;
+        float dy = u.y - my_y;
+        out[idx++] = std::atan2(dy, dx) / static_cast<float>(M_PI);  // rel_angle [-1, 1]
+        out[idx++] = std::sqrt(dx * dx + dy * dy) / 10000.f;          // rel_dist normalized
+    }
+
+    // Padding (3) to reach ALLY_DIM = 37
+    // idx = 34 here, remaining 3 are zeros from memset
 }
 
 // ============================================================
 // Encode enemy unit -> (ENEMY_DIM,) float vector
 // ============================================================
-static void encode_enemy(const UnitState& u, float* out) {
+static void encode_enemy(const UnitState& u, float my_x, float my_y, int observer_pid, float* out) {
     std::memset(out, 0, ENEMY_DIM * sizeof(float));
 
     std::string hid = hero_id_str(u.hero_id);
@@ -291,16 +299,27 @@ static void encode_enemy(const UnitState& u, float* out) {
     auto it = h2i.find(hid);
     int hero_idx = (it != h2i.end()) ? it->second : 0;
 
+    // Per-observer visibility: check if observer can see this enemy
+    bool vis = (u.visible_mask >> observer_pid) & 1;
+
     if (!u.alive) {
         // Dead: only encode hero_id at offset 23 (1+6+7+2+6+1 = 23)
         out[23 + hero_idx] = 1.0f;
         return;
     }
 
+    if (!vis) {
+        // Alive but NOT visible: only hero_id + alive (rest stays 0 from memset)
+        out[22] = 1.0f;                  // alive
+        out[23 + hero_idx] = 1.0f;       // hero_id one-hot
+        return;
+    }
+
+    // --- Visible enemy: full data ---
     int idx = 0;
 
     // Visible (1)
-    out[idx++] = static_cast<float>(u.visible);
+    out[idx++] = 1.0f;
 
     // Basic (6)
     out[idx++] = u.hp / N::hp;
@@ -345,6 +364,14 @@ static void encode_enemy(const UnitState& u, float* out) {
     out[idx++] = -1.0f;
     out[idx++] = -1.0f;
     out[idx++] = -1.0f;
+
+    // Relative polar coordinates (2) — angle and distance from self
+    {
+        float dx = u.x - my_x;
+        float dy = u.y - my_y;
+        out[idx++] = std::atan2(dy, dx) / static_cast<float>(M_PI);  // [-1, 1]
+        out[idx++] = std::sqrt(dx * dx + dy * dy) / 10000.f;          // normalized
+    }
 }
 
 // ============================================================
@@ -372,6 +399,7 @@ static void encode_global(const GlobalState& g, int my_team, float* out) {
 // Encode grid -> (3, GRID_H, GRID_W) float
 // ============================================================
 static void encode_grid(int my_team,
+                        int observer_pid,
                         const UnitState units[MAX_UNITS],
                         const std::vector<uint8_t>& pathability,
                         const std::vector<uint8_t>& vis_t0,
@@ -388,7 +416,7 @@ static void encode_grid(int my_team,
         }
     }
 
-    // Channel 1: ally positions, Channel 2: visible enemy positions
+    // Channel 1: ally positions, Channel 2: visible enemy positions (per-observer)
     float* ch1 = out + plane_size;
     float* ch2 = out + 2 * plane_size;
 
@@ -402,7 +430,8 @@ static void encode_grid(int my_team,
         if (unit_team == my_team) {
             ch1[cell] = 1.0f;
         } else {
-            if (units[i].visible) {
+            bool vis_to_me = (units[i].visible_mask >> observer_pid) & 1;
+            if (vis_to_me) {
                 ch2[cell] = 1.0f;
             }
         }
@@ -439,26 +468,60 @@ EncodedObs encode(const UnitState units[MAX_UNITS],
         // Self vector
         encode_self(units[i], &self_acc[i][0]);
 
+        // Self position for relative features
+        float my_x = units[i].x;
+        float my_y = units[i].y;
+
         // Allies (5 other same-team units)
         int ally_idx = 0;
         for (int j = team * 6; j < team * 6 + 6; ++j) {
             if (j == i) continue;
-            encode_ally(units[j], &ally_acc[i][ally_idx][0]);
+            encode_ally(units[j], my_x, my_y, &ally_acc[i][ally_idx][0]);
             ++ally_idx;
         }
 
-        // Enemies (6 opposite-team units)
+        // Enemies (6 opposite-team units) — sorted by distance (visible first)
         int enemy_start = (team == 0) ? 6 : 0;
+
+        // Build sortable array: (offset 0-5, distance, visible, alive)
+        struct EnemySort {
+            int offset;       // 0-5 within enemy team
+            float dist_sq;
+            bool visible;
+            bool alive;
+        };
+        std::array<EnemySort, 6> enemy_sort;
         for (int j = 0; j < 6; ++j) {
-            encode_enemy(units[enemy_start + j], &enemy_acc[i][j][0]);
+            const auto& eu = units[enemy_start + j];
+            float dx = eu.x - my_x;
+            float dy = eu.y - my_y;
+            bool vis_to_me = (eu.visible_mask >> i) & 1;
+            enemy_sort[j] = {j, dx * dx + dy * dy, vis_to_me, eu.alive != 0};
+        }
+
+        // Sort: visible+alive first → then by distance → tiebreak by player_id
+        std::stable_sort(enemy_sort.begin(), enemy_sort.end(),
+            [](const EnemySort& a, const EnemySort& b) {
+                int a_rank = (a.alive && a.visible) ? 0 : (a.alive ? 1 : 2);
+                int b_rank = (b.alive && b.visible) ? 0 : (b.alive ? 1 : 2);
+                if (a_rank != b_rank) return a_rank < b_rank;
+                if (a.dist_sq != b.dist_sq) return a.dist_sq < b.dist_sq;
+                return a.offset < b.offset;
+            });
+
+        // Record sort mapping and encode in sorted order
+        for (int j = 0; j < 6; ++j) {
+            obs.sort_map.sorted_to_real[i][j] = enemy_sort[j].offset;
+            encode_enemy(units[enemy_start + enemy_sort[j].offset],
+                         my_x, my_y, i, &enemy_acc[i][j][0]);
         }
 
         // Global
         encode_global(global, team, &global_acc[i][0]);
 
-        // Grid (per-team perspective)
+        // Grid (per-observer perspective)
         float* grid_ptr = obs.grid[i].data_ptr<float>();
-        encode_grid(team, units, pathability, vis_t0, vis_t1, grid_ptr);
+        encode_grid(team, i, units, pathability, vis_t0, vis_t1, grid_ptr);
     }
 
     return obs;
@@ -468,7 +531,8 @@ EncodedObs encode(const UnitState units[MAX_UNITS],
 // encode_masks(): Extract action masks from bit-packed fields
 // ============================================================
 
-MaskSet encode_masks(const UnitState units[MAX_UNITS]) {
+MaskSet encode_masks(const UnitState units[MAX_UNITS],
+                     const EnemySortMapping* sort_map) {
     MaskSet ms;
 
     const auto& heads = discrete_heads();
@@ -490,10 +554,29 @@ MaskSet encode_masks(const UnitState units[MAX_UNITS]) {
         }
 
         // unit_target: 14 bits from mask_unit_target (16-bit field)
+        // Bits 0-5: allies (self team), bits 6-7: special, bits 8-13: enemies
+        // If sort_map provided, remap enemy bits 8-13 from real → sorted order
+        // unit_target layout: [self_allies(6) | no_target(1) | attack_point(1) | enemies(6)]
+        //   bits 0-5: same-team targets (fixed order)
+        //   bit 6: no-target (12)
+        //   bit 7: attack-point (13)
+        //   bits 8-13: enemy targets (remapped by distance sort)
         {
             auto acc = ms.masks["unit_target"].accessor<bool, 2>();
-            for (int b = 0; b < 14; ++b)
+            // First 8 bits: allies + special — no remapping
+            for (int b = 0; b < 8; ++b)
                 acc[i][b] = mask_bit16(u.mask_unit_target, b);
+
+            if (sort_map) {
+                // Remap enemy bits 8-13: sorted_slot → real enemy offset
+                for (int sorted_slot = 0; sorted_slot < 6; ++sorted_slot) {
+                    int real_offset = sort_map->sorted_to_real[i][sorted_slot];
+                    acc[i][8 + sorted_slot] = mask_bit16(u.mask_unit_target, 8 + real_offset);
+                }
+            } else {
+                for (int b = 8; b < 14; ++b)
+                    acc[i][b] = mask_bit16(u.mask_unit_target, b);
+            }
         }
 
         // skill_levelup: 6 bits from mask_skill_levelup
@@ -517,11 +600,11 @@ MaskSet encode_masks(const UnitState units[MAX_UNITS]) {
                 acc[i][b] = mask_bit(u.mask_attribute, b);
         }
 
-        // item_buy: 16 bits from mask_item_buy (16-bit field)
+        // item_buy: 17 bits from mask_item_buy (32-bit field)
         {
             auto acc = ms.masks["item_buy"].accessor<bool, 2>();
-            for (int b = 0; b < 16; ++b)
-                acc[i][b] = mask_bit16(u.mask_item_buy, b);
+            for (int b = 0; b < 17; ++b)
+                acc[i][b] = mask_bit32(u.mask_item_buy, b);
         }
 
         // item_use: 7 bits from mask_item_use

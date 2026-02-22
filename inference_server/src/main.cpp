@@ -110,7 +110,8 @@ static void send_action_packet(
     const std::string& addr,
     uint32_t tick,
     const std::array<InferenceEngine::InferResult, MAX_UNITS>& results,
-    const UnitState units[MAX_UNITS])
+    const UnitState units[MAX_UNITS],
+    const EnemySortMapping* sort_map = nullptr)
 {
     ActionPacket pkt;
     std::memset(&pkt, 0, sizeof(pkt));
@@ -155,6 +156,15 @@ static void send_action_packet(
 
         ua.skill          = get_int("skill");
         ua.unit_target    = get_int("unit_target");
+
+        // Remap enemy target from sorted slot to real player offset
+        // unit_target layout: 0-5=allies, 6-7=special(no_target,attack_point), 8-13=enemies
+        if (sort_map && ua.unit_target >= 8 && ua.unit_target <= 13) {
+            int sorted_slot = ua.unit_target - 8;
+            int real_offset = sort_map->sorted_to_real[i][sorted_slot];
+            ua.unit_target = static_cast<uint8_t>(8 + real_offset);
+        }
+
         ua.skill_levelup  = get_int("skill_levelup");
         ua.stat_upgrade   = get_int("stat_upgrade");
         ua.attribute      = get_int("attribute");
@@ -332,13 +342,16 @@ int main(int argc, char* argv[]) {
             inst.last_tick = header.tick;
             inst.last_recv_time = std::chrono::steady_clock::now();
 
-            // Encode state -> tensors
+            // Encode state -> tensors (with distance-sorted enemies)
+            std::cerr << "[main] Encoding state..." << std::endl;
             EncodedObs obs = state_encoder::encode(units, global, pathability, vis_t0, vis_t1);
-            MaskSet masks = state_encoder::encode_masks(units);
+            MaskSet masks = state_encoder::encode_masks(units, &obs.sort_map);
 
             // Compute rewards (from previous state to current)
+            std::cerr << "[main] Computing rewards..." << std::endl;
             auto rewards = inst.reward_calc.compute(
                 units, global, events, inst.prev_units, inst.prev_global, inst.has_prev);
+            std::cerr << "[main] Rewards done, starting inference..." << std::endl;
 
             // Save INPUT hidden states BEFORE inference (for rollout storage)
             std::array<torch::Tensor, MAX_UNITS> input_hx_h;
@@ -374,11 +387,32 @@ int main(int argc, char* argv[]) {
                     agent_masks[name] = mask_tensor[i].unsqueeze(0).to(device);
                 }
 
-                results[i] = engine.infer_hero(
-                    hero_id, self_i, ally_i, enemy_i, global_i, grid_i,
-                    inst.hx_h[hero_id], inst.hx_c[hero_id],
-                    agent_masks
-                );
+                try {
+                    results[i] = engine.infer_hero(
+                        hero_id, self_i, ally_i, enemy_i, global_i, grid_i,
+                        inst.hx_h[hero_id], inst.hx_c[hero_id],
+                        agent_masks
+                    );
+                } catch (const std::exception& e) {
+                    std::cerr << "[main] Inference error hero=" << hero_id
+                              << " i=" << i << ": " << e.what() << std::endl;
+                    // Print mask shapes for debugging
+                    for (const auto& [mname, mt] : agent_masks) {
+                        std::cerr << "  mask[" << mname << "] shape=";
+                        for (int d = 0; d < mt.dim(); ++d) std::cerr << mt.size(d) << (d+1<mt.dim()? "x" : "");
+                        std::cerr << std::endl;
+                    }
+                    // Use default (no-op) result
+                    results[i].actions["move"] = torch::zeros({1, 2});
+                    results[i].actions["point"] = torch::zeros({1, 2});
+                    results[i].log_prob = torch::zeros({1});
+                    results[i].value = torch::zeros({1});
+                    results[i].new_h = inst.hx_h[hero_id];
+                    results[i].new_c = inst.hx_c[hero_id];
+                    const auto& heads = discrete_heads();
+                    for (int h = 0; h < NUM_DISCRETE_HEADS; ++h)
+                        results[i].actions[heads[h].name] = torch::zeros({1}, torch::kLong);
+                }
 
                 // Update LSTM hidden state
                 inst.hx_h[hero_id] = results[i].new_h;
@@ -420,8 +454,8 @@ int main(int argc, char* argv[]) {
             inst.prev_global = global;
             inst.has_prev = true;
 
-            // Send ACTION packet back
-            send_action_packet(server, addr, header.tick, results, units);
+            // Send ACTION packet back (with enemy sort mapping for target remapping)
+            send_action_packet(server, addr, header.tick, results, units, &obs.sort_map);
         }
 
         // --------------------------------------------------------

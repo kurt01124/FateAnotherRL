@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iostream>
 
 // ============================================================
 // Constructor
@@ -10,9 +11,11 @@
 
 RewardCalc::RewardCalc()
     : has_prev_pos_(false)
+    , prev_game_time_(0.0f)
 {
     std::memset(prev_x_, 0, sizeof(prev_x_));
     std::memset(prev_y_, 0, sizeof(prev_y_));
+    std::memset(alarm_timer_, 0, sizeof(alarm_timer_));
 }
 
 // ============================================================
@@ -21,8 +24,10 @@ RewardCalc::RewardCalc()
 
 void RewardCalc::reset() {
     has_prev_pos_ = false;
+    prev_game_time_ = 0.0f;
     std::memset(prev_x_, 0, sizeof(prev_x_));
     std::memset(prev_y_, 0, sizeof(prev_y_));
+    std::memset(alarm_timer_, 0, sizeof(alarm_timer_));
 }
 
 // ============================================================
@@ -130,6 +135,32 @@ std::array<float, MAX_UNITS> RewardCalc::compute(
         }
     }
 
+    // ---- 1b. Damage-based rewards (team-distributed) ----
+    if (has_prev) {
+        for (int i = 0; i < MAX_UNITS; ++i) {
+            if (!prev_units[i].alive) continue;
+            float hp_delta = prev_units[i].hp - units[i].hp;  // positive = took damage
+            if (hp_delta > 0.0f && units[i].max_hp > 0.0f) {
+                float ratio = hp_delta / units[i].max_hp;
+                int victim_team = (i < 6) ? 0 : 1;
+                int attacker_team = 1 - victim_team;
+                int attacker_base = attacker_team * 6;
+                for (int a = 0; a < 6; ++a)
+                    rewards[attacker_base + a] += RewardDefaults::damage_ratio * ratio;
+            }
+        }
+
+        // Self HP recovery reward
+        for (int i = 0; i < MAX_UNITS; ++i) {
+            if (!units[i].alive || !prev_units[i].alive) continue;
+            float hp_gain = units[i].hp - prev_units[i].hp;  // positive = healed
+            if (hp_gain > 0.0f && units[i].max_hp > 0.0f) {
+                float ratio = hp_gain / units[i].max_hp;
+                rewards[i] += RewardDefaults::heal_ratio * ratio;
+            }
+        }
+    }
+
     // ---- 2. Score change rewards ----
     if (has_prev) {
         int score_delta_t0 = global.score_team0 - prev_global.score_team0;
@@ -148,19 +179,44 @@ std::array<float, MAX_UNITS> RewardCalc::compute(
     }
 
     // ---- 3. Per-tick penalties ----
+    float tick_dt = 0.0f;
+    if (prev_game_time_ > 0.0f)
+        tick_dt = global.game_time - prev_game_time_;
+
     for (int i = 0; i < MAX_UNITS; ++i) {
         if (!units[i].alive) continue;
 
         float x = units[i].x;
         float y = units[i].y;
 
-        // Idle penalty
+        // Idle penalty — exempt during combat activity
         if (has_prev_pos_) {
             float dx = x - prev_x_[i];
             float dy = y - prev_y_[i];
             float dist = std::sqrt(dx * dx + dy * dy);
             if (dist < 10.0f) {
-                rewards[i] += RewardDefaults::idle_penalty;
+                bool in_combat = false;
+                if (has_prev) {
+                    // My HP changed (taking damage)
+                    float my_hp_delta = std::abs(units[i].hp - prev_units[i].hp);
+                    if (my_hp_delta > 1.0f) in_combat = true;
+
+                    // Nearby enemy HP decreased (dealing damage)
+                    int enemy_base = (i < 6) ? 6 : 0;
+                    for (int e = 0; e < 6 && !in_combat; ++e) {
+                        int eidx = enemy_base + e;
+                        float ehp_delta = prev_units[eidx].hp - units[eidx].hp;
+                        if (ehp_delta > 1.0f) {
+                            float edx = units[i].x - units[eidx].x;
+                            float edy = units[i].y - units[eidx].y;
+                            float edist = std::sqrt(edx * edx + edy * edy);
+                            if (edist < 800.f) in_combat = true;
+                        }
+                    }
+                }
+                if (!in_combat) {
+                    rewards[i] += RewardDefaults::idle_penalty;
+                }
             }
         }
 
@@ -172,8 +228,35 @@ std::array<float, MAX_UNITS> RewardCalc::compute(
         if (sp > 0) {
             rewards[i] += RewardDefaults::skill_points_held * static_cast<float>(sp);
         }
+
+        // Alarm proximity reward
+        if (units[i].enemy_alarm && alarm_timer_[i] <= 0.0f) {
+            alarm_timer_[i] = RewardDefaults::alarm_duration;
+        }
+
+        if (alarm_timer_[i] > 0.0f) {
+            int my_team = (i < 6) ? 0 : 1;
+            int en_base = (1 - my_team) * 6;
+            float min_dist = 99999.f;
+            for (int e = 0; e < 6; ++e) {
+                int eidx = en_base + e;
+                if (!units[eidx].alive) continue;
+                float edx = units[i].x - units[eidx].x;
+                float edy = units[i].y - units[eidx].y;
+                float d = std::sqrt(edx * edx + edy * edy);
+                if (d < min_dist) min_dist = d;
+            }
+
+            if (min_dist < 1500.f) {
+                float proximity = 1.0f - (min_dist / 1500.f);
+                rewards[i] += RewardDefaults::alarm_proximity * proximity;
+            }
+
+            alarm_timer_[i] -= (tick_dt > 0.0f) ? tick_dt : 0.1f;
+        }
     }
     has_prev_pos_ = true;
+    prev_game_time_ = global.game_time;
 
     // ---- 4. Team Spirit blending ----
     apply_team_spirit(rewards, RewardDefaults::team_spirit);

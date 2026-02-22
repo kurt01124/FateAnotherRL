@@ -20,32 +20,45 @@ InferenceEngine::InferenceEngine(const std::string& model_dir, torch::Device dev
     std::cout << "[InferenceEngine] Model dir: " << model_dir
               << ", device: " << device << std::endl;
 
-    // Try to load model_latest.pt at startup
-    if (load_shared_model()) {
-        std::cout << "[InferenceEngine] Shared model loaded at startup" << std::endl;
+    // Try to load per-hero models at startup
+    int loaded = load_hero_models();
+    if (loaded > 0) {
+        std::cout << "[InferenceEngine] Loaded " << loaded << " hero models at startup" << std::endl;
     } else {
-        std::cout << "[InferenceEngine] No model_latest.pt found at startup (will retry)" << std::endl;
+        std::cout << "[InferenceEngine] No hero models found at startup (will retry)" << std::endl;
     }
 }
 
 // ============================================================
-// load_shared_model: Load model_latest.pt
+// load_hero_models: Load all per-hero .pt files
 // ============================================================
 
-bool InferenceEngine::load_shared_model() {
-    fs::path model_path = fs::path(model_dir_) / "model_latest.pt";
+int InferenceEngine::load_hero_models() {
+    int count = 0;
+    for (const auto& hid : hero_ids()) {
+        if (load_hero_model(hid))
+            ++count;
+    }
+    return count;
+}
+
+// ============================================================
+// load_hero_model: Load a single hero's .pt file
+// ============================================================
+
+bool InferenceEngine::load_hero_model(const std::string& hero_id) {
+    fs::path model_path = fs::path(model_dir_) / (hero_id + ".pt");
 
     if (!fs::exists(model_path)) {
         return false;
     }
 
     try {
-        shared_model_ = torch::jit::load(model_path.string(), device_);
-        shared_model_.eval();
-        model_loaded_ = true;
-        model_time_ = fs::last_write_time(model_path);
+        auto module = torch::jit::load(model_path.string(), device_);
+        module.eval();
+        hero_models_[hero_id] = std::move(module);
+        model_times_[hero_id] = fs::last_write_time(model_path);
 
-        std::cout << "[InferenceEngine] Loaded shared model: " << model_path.string() << std::endl;
         return true;
     } catch (const c10::Error& e) {
         std::cerr << "[InferenceEngine] Failed to load " << model_path.string()
@@ -55,17 +68,21 @@ bool InferenceEngine::load_shared_model() {
 }
 
 // ============================================================
-// maybe_reload: Check model_latest.pt for changes
+// maybe_reload: Check per-hero .pt files for changes
 // ============================================================
 
 void InferenceEngine::maybe_reload() {
-    fs::path model_path = fs::path(model_dir_) / "model_latest.pt";
-    if (!fs::exists(model_path)) return;
+    for (const auto& hid : hero_ids()) {
+        fs::path model_path = fs::path(model_dir_) / (hid + ".pt");
+        if (!fs::exists(model_path)) continue;
 
-    auto new_time = fs::last_write_time(model_path);
-    if (!model_loaded_ || model_time_ != new_time) {
-        std::cout << "[InferenceEngine] Reloading model_latest.pt..." << std::endl;
-        load_shared_model();
+        auto new_time = fs::last_write_time(model_path);
+        auto it = model_times_.find(hid);
+        if (it == model_times_.end() || it->second != new_time) {
+            if (load_hero_model(hid)) {
+                std::cout << "[InferenceEngine] Reloaded " << hid << ".pt" << std::endl;
+            }
+        }
     }
 }
 
@@ -74,7 +91,7 @@ void InferenceEngine::maybe_reload() {
 // ============================================================
 
 bool InferenceEngine::has_model(const std::string& hero_id) const {
-    return model_loaded_;
+    return hero_models_.count(hero_id) > 0;
 }
 
 // ============================================================
@@ -135,7 +152,7 @@ InferenceEngine::sample_normal(torch::Tensor mean, torch::Tensor logstd) {
 }
 
 // ============================================================
-// infer_hero: Run inference for a single hero (shared model)
+// infer_hero: Run inference for a single hero (per-hero model)
 // ============================================================
 
 InferenceEngine::InferResult InferenceEngine::infer_hero(
@@ -151,9 +168,10 @@ InferenceEngine::InferResult InferenceEngine::infer_hero(
 {
     InferResult result;
 
-    if (!model_loaded_) {
-        // No model loaded: return random/default actions
-        std::cerr << "[InferenceEngine] No model loaded, returning defaults" << std::endl;
+    auto model_it = hero_models_.find(hero_id);
+    if (model_it == hero_models_.end()) {
+        // No model loaded for this hero: return random/default actions
+        std::cerr << "[InferenceEngine] No model for " << hero_id << ", returning defaults" << std::endl;
 
         const auto& heads = discrete_heads();
         for (int h = 0; h < NUM_DISCRETE_HEADS; ++h) {
@@ -167,6 +185,8 @@ InferenceEngine::InferResult InferenceEngine::infer_hero(
         result.new_c = hx_c;
         return result;
     }
+
+    auto& model = model_it->second;
 
     // Build input vector matching FateModelExport.forward() signature
     std::vector<torch::jit::IValue> inputs;
@@ -203,7 +223,7 @@ InferenceEngine::InferResult InferenceEngine::infer_hero(
 
     // Run forward pass
     torch::NoGradGuard no_grad;
-    auto output = shared_model_.forward(inputs);
+    auto output = model.forward(inputs);
 
     // Parse output tuple (18 tensors):
     // 0-10: discrete logits (already masked by model)

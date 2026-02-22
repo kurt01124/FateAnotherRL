@@ -26,7 +26,7 @@ class FateModelExport(nn.Module):
     Input shapes (B = batch size):
         self_vec:              (B, 77)
         ally_vec:              (B, N_ally, 37)
-        enemy_vec:             (B, N_enemy, 41)
+        enemy_vec:             (B, N_enemy, 43)
         global_vec:            (B, 6)
         grid:                  (B, 3, H, W)
         hx_h:                  (1, B, 256)
@@ -39,7 +39,7 @@ class FateModelExport(nn.Module):
         skill_levelup_logits   (B, 6)
         stat_upgrade_logits    (B, 10)
         attribute_logits       (B, 5)
-        item_buy_logits        (B, 16)
+        item_buy_logits        (B, 17)
         item_use_logits        (B, 7)
         seal_use_logits        (B, 7)
         faire_send_logits      (B, 6)
@@ -58,7 +58,7 @@ class FateModelExport(nn.Module):
         self,
         self_dim: int = 77,
         ally_dim: int = 37,
-        enemy_dim: int = 41,
+        enemy_dim: int = 43,
         global_dim: int = 6,
         grid_channels: int = 3,
         hidden_dim: int = 256,
@@ -85,7 +85,7 @@ class FateModelExport(nn.Module):
         self.head_skill_levelup = nn.Linear(hidden_dim, 6)
         self.head_stat_upgrade = nn.Linear(hidden_dim, 10)
         self.head_attribute = nn.Linear(hidden_dim, 5)
-        self.head_item_buy = nn.Linear(hidden_dim, 16)
+        self.head_item_buy = nn.Linear(hidden_dim, 17)
         self.head_item_use = nn.Linear(hidden_dim, 7)
         self.head_seal_use = nn.Linear(hidden_dim, 7)
         self.head_faire_send = nn.Linear(hidden_dim, 6)

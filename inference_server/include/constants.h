@@ -38,8 +38,8 @@ constexpr int NUM_HEROES = 12;
 
 inline const std::array<std::string, NUM_HEROES>& hero_ids() {
     static const std::array<std::string, NUM_HEROES> ids = {
-        "H000", "H001", "H002", "H003", "H005", "H006",
-        "H007", "H008", "H009", "H028", "H03M", "H04D",
+        "H000", "H001", "H002", "H03M", "H028", "H009",  // Team 0
+        "H007", "H005", "H003", "H006", "H004", "H008",  // Team 1
     };
     return ids;
 }
@@ -59,7 +59,7 @@ inline const std::unordered_map<std::string, int>& hero_to_idx() {
 // ============================================================
 constexpr int SELF_DIM      = 77;
 constexpr int ALLY_DIM      = 37;
-constexpr int ENEMY_DIM     = 41;
+constexpr int ENEMY_DIM     = 43;
 constexpr int GLOBAL_DIM    = 6;
 constexpr int GRID_CHANNELS = 3;
 constexpr int OBS_GRID_H    = 25;
@@ -83,7 +83,7 @@ inline const std::array<DiscreteHead, NUM_DISCRETE_HEADS>& discrete_heads() {
         {"skill_levelup",  6},
         {"stat_upgrade",  10},
         {"attribute",      5},
-        {"item_buy",      16},
+        {"item_buy",      17},
         {"item_use",       7},
         {"seal_use",       7},
         {"faire_send",     6},
@@ -94,7 +94,7 @@ inline const std::array<DiscreteHead, NUM_DISCRETE_HEADS>& discrete_heads() {
 }
 
 // Total discrete action space size
-constexpr int TOTAL_DISCRETE_ACTIONS = 8 + 14 + 6 + 10 + 5 + 16 + 7 + 7 + 6 + 6 + 3; // = 88
+constexpr int TOTAL_DISCRETE_ACTIONS = 8 + 14 + 6 + 10 + 5 + 17 + 7 + 7 + 6 + 6 + 3; // = 89
 
 // Continuous heads: move(2) + point(2)
 constexpr int NUM_CONTINUOUS = 4;  // move_x, move_y, point_x, point_y
@@ -112,12 +112,16 @@ inline const std::array<std::string, 6>& skill_slots() {
 // ============================================================
 namespace RewardDefaults {
     // --- Event rewards (raw, before zero-sum/team-spirit) ---
-    constexpr float kill_personal    =  3.0f;
+    constexpr float kill_personal    =  3.0f;    // kill bonus (stacks with damage reward)
     constexpr float death            = -1.0f;    // OpenAI Five: -1.0
     constexpr float creep            =  0.16f;   // OpenAI Five last-hit: 0.16
     constexpr float levelup          =  0.5f;
     constexpr float friendly_kill    = -3.0f;    // punish team kills heavily
     constexpr float score_point      =  2.0f;    // team scored a point (70 to win)
+    constexpr float damage_ratio     =  3.0f;    // enemy maxHP 100% dealt = 3.0 reward
+    constexpr float heal_ratio       =  1.0f;    // self maxHP 100% healed = 1.0 reward
+    constexpr float alarm_proximity  =  0.1f;    // per-tick max (closest to enemy)
+    constexpr float alarm_duration   = 10.0f;    // seconds after alarm triggers
 
     // --- Per-tick ---
     constexpr float skill_points_held = -0.02f;

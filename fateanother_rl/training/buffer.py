@@ -501,6 +501,34 @@ class TensorRolloutBuffer:
             self.T, self.num_agents, self.T * self.num_agents,
         )
 
+    def slice_agent(self, agent_idx: int) -> "TensorRolloutBuffer":
+        """Extract a single agent's data from (T, 12, ...) tensors.
+
+        Returns a new TensorRolloutBuffer with num_agents=1 for per-hero PPO.
+        """
+        sliced = TensorRolloutBuffer.__new__(TensorRolloutBuffer)
+        sliced.gamma = self.gamma
+        sliced.lam = self.lam
+
+        sliced.obs = {k: v[:, agent_idx:agent_idx+1] for k, v in self.obs.items()}
+        sliced.log_probs = self.log_probs[:, agent_idx:agent_idx+1]
+        sliced.values = self.values[:, agent_idx:agent_idx+1]
+        sliced.rewards = self.rewards[:, agent_idx:agent_idx+1]
+        sliced.dones = self.dones[:, agent_idx:agent_idx+1]
+        sliced.hx_h = self.hx_h[:, agent_idx:agent_idx+1]
+        sliced.hx_c = self.hx_c[:, agent_idx:agent_idx+1]
+        sliced.masks = {k: v[:, agent_idx:agent_idx+1] for k, v in self.masks.items()}
+        sliced.actions = {k: v[:, agent_idx:agent_idx+1] for k, v in self.actions.items()}
+
+        sliced.T = self.T
+        sliced.num_agents = 1
+
+        # Copy GAE results if computed
+        sliced.advantages = self.advantages[:, agent_idx:agent_idx+1] if self.advantages is not None else None
+        sliced.returns = self.returns[:, agent_idx:agent_idx+1] if self.returns is not None else None
+
+        return sliced
+
     def total_transitions(self) -> int:
         return self.T * self.num_agents
 

@@ -118,384 +118,8 @@ def patch_w3a_fix_abilities(data, target_ids):
 
     return result
 
-def patch_w3a_add_aord(data, aord_map):
-    """Add aord (order string) field to abilities for RL agent order control.
-
-    aord_map: dict of ability_id_str -> order_string
-    Example: {"A01J": "thunderclap", "A02B": "divineshield"}
-    """
-    def make_str_mod(fid, val_str):
-        """Create a string modification record for w3a."""
-        val_bytes = val_str.encode('utf-8') + b'\x00'
-        return fid + struct.pack('<III', 3, 0, 0) + val_bytes + struct.pack('<I', 0)
-
-    result = data
-    added = 0
-
-    for target_id, order_str in aord_map.items():
-        target_bytes = target_id.encode() if isinstance(target_id, str) else target_id
-
-        f = BytesIO(result)
-        f.read(4)  # version
-        oc = struct.unpack('<I', f.read(4))[0]
-        # Skip originals
-        for _ in range(oc):
-            f.read(8)
-            mc = struct.unpack('<I', f.read(4))[0]
-            for _ in range(mc):
-                f.read(4)
-                vt = struct.unpack('<I', f.read(4))[0]
-                f.read(8)
-                if vt == 3:
-                    while f.read(1) != b'\x00': pass
-                else:
-                    f.read(4)
-                f.read(4)
-        cc = struct.unpack('<I', f.read(4))[0]
-
-        found = False
-        for _ in range(cc):
-            f.read(4)  # base_id
-            cid = f.read(4)
-            mc_pos = f.tell()
-            mc = struct.unpack('<I', f.read(4))[0]
-            # Skip all mods
-            for _ in range(mc):
-                f.read(4)
-                vt = struct.unpack('<I', f.read(4))[0]
-                f.read(8)
-                if vt == 3:
-                    while f.read(1) != b'\x00': pass
-                else:
-                    f.read(4)
-                f.read(4)
-            mods_end = f.tell()
-
-            if cid == target_bytes:
-                aord_mod = make_str_mod(b'aord', order_str)
-                tmp = bytearray(result)
-                new_mc = mc + 1
-                struct.pack_into('<I', tmp, mc_pos, new_mc)
-                result = bytes(tmp[:mods_end]) + aord_mod + bytes(tmp[mods_end:])
-                added += 1
-                found = True
-                break
-
-        if not found:
-            print(f"  WARNING: {target_id} not found in w3a for aord")
-
-    return result, added
-
 # A0A5 = Saber Instinct Enhancement, A052 = Lancer SwiftStrikes
 w3a_data = patch_w3a_fix_abilities(orig_w3a, ['A0A5', 'A052'])
-
-# ============================================================
-# Patch RL-AORD: Add unique order strings to all RL abilities
-# ============================================================
-rl_aord_map = {
-    # Saber H000
-    "A087": "unavatar",          # Q InvisibleAir (→ANcl)
-    "A01H": "unavengerform",     # W Caliburn (→ANcl)
-    "A01J": "thunderclap",       # E Excalibur (AUcs, aord is backup)
-    "A02B": "divineshield",      # R Avalon (→ANcl)
-    "A0A5": "roar",              # D SaberInstinct (→ANcl)
-    # Archer H001
-    "A019": "transmute",         # Q Kanshou&Bakuya (→ANcl)
-    "A01B": "windwalk",          # W BrokenPhantasm (→ANcl)
-    "A014": "blight",            # E RhoAias (→ANcl)
-    "A03C": "waterelemental",    # R UBW (→ANcl)
-    # Lancer H002 (rune sub-abilities + main)
-    "A035": "carrionscarabs",    # Q Rune-Ansuz (→ANcl)
-    "A02T": "shockwave",         # D Rune-Ehwaz (→ANcl)
-    "A03H": "mirrorimage",       # F Rune-Berkanan (→ANcl)
-    "A05A": "stomp",             # rune Dagaz (sub-ability)
-    "A05B": "earthquake",        # rune Eihwaz (sub-ability)
-    "A052": "blizzard",          # W SwiftStrikes (→ANcl)
-    "A01K": "web",               # E GaeBolg (→ANcl)
-    "A028": "forceofnature",     # R FlyingSpear (→ANcl)
-    # Rider H003
-    "A01Q": "cyclone",           # Q CatenaSword (→ANcl)
-    "A01R": "faeriefire",        # W BreakerGorgon (AUcs, aord is backup)
-    "A01F": "metamorphosis",     # E BloodFort (→ANcl)
-    "A01E": "inferno",           # R Bellerophon (→ANcl)
-    # Caster/Medea H004
-    "A049": "starfall",          # Q TerritoryCreation (→ANcl)
-    "A08D": "aegis",             # W Aegis (ANcl, Ncl6 patched)
-    # A08A already has aord="unbearform"
-    "A06L": "carrionswarm",      # R HecaticGraea (→ANcl)
-    # FakeAssassin H005
-    "A01L": "deathcoil",         # Q Gatekeeper (→ANcl)
-    "A05D": "darkportal",        # W Knowledge (→ANcl)
-    "A01O": "fingerofdeath",     # E Windblade (→ANcl)
-    "A01P": "firebolt",          # R TsubameGaeshi (→ANcl)
-    # Berserker H006
-    "A04J": "frostarmor",        # Q TrueStrike (AUcs, aord is backup)
-    "A01D": "frostnova",         # W MadEnhancement (→ANcl)
-    "A00Z": "sleep",             # E Bravery (→ANcl)
-    "A015": "darkconversion",    # R NineLives (→ANcl)
-    # SaberAlter H007
-    "A00B": "cripple",           # Q Tyrant (→ANcl)
-    "A07S": "recharge",          # W Vortigern (→ANcl)
-    "A024": "possession",        # E PranaBurst (→ANcl)
-    "A023": "animatedead",       # R ExcaliburMorgan (AUcs, aord is backup)
-    # TrueAssassin H008
-    "A09Y": "inferno",           # Q Steal (→ANcl)
-    "A018": "deathanddecay",     # W SelfReconstruction (→ANcl)
-    "A012": "ambush",            # E Ambush (AOwk, aord matches base)
-    # A02A already has aord="unavengerform"
-    # Gilgamesh H009
-    "A01Y": "unavengerform",     # Q Marduk (→ANcl)
-    "A01X": "creepthunderbolt",  # W Enkidu (→ANcl)
-    "A01Z": "cloudoffog",        # E GateOfBabylon (→ANcl)
-    "A02E": "controlmagic",      # R EnumaElish (AUcs, aord is backup)
-    # Avenger H028 (CAST IDs, not learn IDs!)
-    "A06J": "spellsteal",        # Q KillingIntent (→ANcl)
-    "A05V": "polymorph",         # W TawrichZarich (→ANcl)
-    "A05X": "drain",             # E Shade (→ANcl)
-    "A02P": "absorb",            # R VergAvesta (→ANcl)
-    # Lancelot H03M
-    "A02Z": "charm",             # Q SubmachineGun (→ANcl)
-    "A08F": "acidbomb",          # W DoubleEdgedSword (→ANcl)
-    "A09B": "knightnotdie",      # E KnightNotDie (ANcl, Ncl6 patched)
-    "A08S": "healingspray",      # R Arondight (→ANcl)
-    # Diarmuid H04D (CAST IDs for E/R!)
-    "A0AG": "transmute",         # Q Crash (→ANcl)
-    "A0AI": "lavamonster",       # W DoubleSpearMastery (→ANcl)
-    "A0AL": "soulburn",          # E GaeBuidhe (→ANcl)
-    "A0AM": "volcano",           # R GaeDearg (→ANcl)
-    # Seal
-    "A094": "sealact",           # CommandSeal (ANcl, Ncl6 patched)
-}
-w3a_data, aord_count = patch_w3a_add_aord(w3a_data, rl_aord_map)
-print(f"Patch RL-AORD: Added aord to {aord_count}/{len(rl_aord_map)} abilities")
-
-# ============================================================
-# Patch RL-NCL6: Modify Channel base order strings for collision resolution
-# ============================================================
-def patch_w3a_modify_ncl6(data, ncl6_map):
-    """Modify existing Ncl6 (Channel base order) strings in w3a.
-
-    For ANcl (Channel) abilities, the actual order string is Ncl6, NOT aord.
-    Abilities sharing the same Ncl6 on the same hero cause order collisions.
-    This patches Ncl6 to give each ability a unique order string.
-
-    ncl6_map: {ability_id_str: new_ncl6_value}
-    """
-    output = BytesIO()
-    pos = 0
-    modified = 0
-
-    # version
-    output.write(data[pos:pos+4]); pos += 4
-
-    for table_idx in range(2):
-        count = struct.unpack_from('<I', data, pos)[0]
-        output.write(data[pos:pos+4]); pos += 4
-
-        for _ in range(count):
-            oid = data[pos:pos+4]; output.write(oid); pos += 4
-            cid = data[pos:pos+4]; output.write(cid); pos += 4
-            mc = struct.unpack_from('<I', data, pos)[0]
-            output.write(data[pos:pos+4]); pos += 4
-
-            key = cid.decode('latin-1') if cid != b'\x00\x00\x00\x00' else oid.decode('latin-1')
-
-            for _ in range(mc):
-                mod_start = pos
-                fid = data[pos:pos+4]; pos += 4
-                dt = struct.unpack_from('<I', data, pos)[0]; pos += 4
-                level = struct.unpack_from('<I', data, pos)[0]; pos += 4
-                variation = struct.unpack_from('<I', data, pos)[0]; pos += 4
-
-                if dt == 3:
-                    val_start = pos
-                    end = data.index(b'\x00', pos)
-                    old_str = data[val_start:end].decode('utf-8', errors='replace')
-                    pos = end + 1
-                else:
-                    pos += 4
-                pos += 4  # end marker
-                mod_end = pos
-
-                if key in ncl6_map and fid == b'Ncl6' and dt == 3:
-                    new_val = ncl6_map[key]
-                    output.write(fid)
-                    output.write(struct.pack('<III', 3, level, variation))
-                    output.write(new_val.encode('utf-8') + b'\x00')
-                    output.write(struct.pack('<I', 0))
-                    modified += 1
-                    if modified <= 6:
-                        print(f"  Ncl6: {key} lvl={level} '{old_str}' -> '{new_val}'")
-                else:
-                    output.write(data[mod_start:mod_end])
-
-    return output.getvalue(), modified
-
-# Resolve Channel ability order string collisions
-# A08D, A09B, A094 all share Ncl6="channel" — give each a unique order
-rl_ncl6_map = {
-    "A08D": "aegis",        # Caster W - Aegis (was "channel")
-    "A09B": "knightnotdie", # Lancelot E - KnightNotDie (was "channel")
-    "A094": "sealact",      # Seal Activate for ALL heroes (was "channel")
-}
-w3a_data, ncl6_count = patch_w3a_modify_ncl6(w3a_data, rl_ncl6_map)
-print(f"Patch RL-NCL6: Modified Ncl6 for {ncl6_count} entries (3 abilities)")
-
-# ============================================================
-# Patch RL-ANCL: Convert non-working ability base types to ANcl
-# ============================================================
-# IssueOrder JASS natives only work for ANcl (via Ncl6), AOwk (via aord),
-# and AUcs (via "channel"). All other base types ignore order strings.
-# Solution: Change base type (orig_id) to ANcl and set Ncl6 order string.
-def patch_w3a_convert_to_ancl(data, convert_map):
-    """Convert ability base types to ANcl (Channel) for IssueOrder compatibility.
-
-    For each ability in convert_map:
-    1. Changes orig_id to 'ANcl'
-    2. Adds Ncl6 = order_string (for IssueOrder matching)
-    3. Adds Ncl1 = 0.0 (art duration)
-    4. Adds Ncl3 = 1 (options: visible)
-    5. Adds Ncl5 = 0 (base order ID)
-
-    convert_map: dict of ability_id_str -> ncl6_order_string
-    """
-    NUM_LEVELS = 5  # WC3 Channel fields must be per-level (1-5)
-
-    def make_str_mod_lvl(fid, lvl, val_str):
-        val_bytes = val_str.encode('utf-8') + b'\x00'
-        return fid + struct.pack('<III', 3, lvl, 0) + val_bytes + struct.pack('<I', 0)
-
-    def make_real_mod_lvl(fid, lvl, val):
-        return fid + struct.pack('<III', 1, lvl, 0) + struct.pack('<f', val) + struct.pack('<I', 0)
-
-    def make_int_mod_lvl(fid, lvl, val):
-        return fid + struct.pack('<IIIiI', 0, lvl, 0, val, 0)
-
-    output = BytesIO()
-    pos = 0
-    converted = 0
-
-    # version
-    output.write(data[pos:pos+4]); pos += 4
-
-    for table_idx in range(2):  # original abilities + custom abilities
-        count = struct.unpack_from('<I', data, pos)[0]
-        output.write(data[pos:pos+4]); pos += 4
-
-        for _ in range(count):
-            oid = data[pos:pos+4]; pos += 4
-            cid = data[pos:pos+4]; pos += 4
-            mc = struct.unpack_from('<I', data, pos)[0]; pos += 4
-
-            # Read all modification bytes for this ability
-            mods_start = pos
-            for _ in range(mc):
-                pos += 4  # field_id
-                vt = struct.unpack_from('<I', data, pos)[0]; pos += 4
-                pos += 8  # level + data_point
-                if vt == 3:
-                    while data[pos:pos+1] != b'\x00': pos += 1
-                    pos += 1
-                else:
-                    pos += 4
-                pos += 4  # end marker
-            mods_end = pos
-            mods_bytes = data[mods_start:mods_end]
-
-            key = cid.decode('latin-1')
-            if key in convert_map:
-                ncl6_val = convert_map[key]
-                old_base = oid.decode('latin-1')
-                # Write with changed orig_id
-                output.write(b'ANcl')           # Changed base type
-                output.write(cid)
-                # 5 fields × 5 levels = 25 new modifications
-                added_mods = NUM_LEVELS * 5     # Ncl1, Ncl3, Ncl4, Ncl5, Ncl6 × 5 levels
-                new_mc = mc + added_mods
-                output.write(struct.pack('<I', new_mc))
-                output.write(mods_bytes)         # Existing modifications
-                # Add Channel fields for EACH level (1-5)
-                for lvl in range(1, NUM_LEVELS + 1):
-                    output.write(make_str_mod_lvl(b'Ncl6', lvl, ncl6_val))
-                    output.write(make_real_mod_lvl(b'Ncl1', lvl, 0.0))
-                    output.write(make_int_mod_lvl(b'Ncl3', lvl, 1))
-                    output.write(make_real_mod_lvl(b'Ncl4', lvl, 0.0))
-                    output.write(make_int_mod_lvl(b'Ncl5', lvl, 0))
-                converted += 1
-                print(f"  {key}: {old_base} -> ANcl, Ncl6='{ncl6_val}' (mods {mc}->{new_mc})")
-            else:
-                # Write unchanged
-                output.write(oid)
-                output.write(cid)
-                output.write(struct.pack('<I', mc))
-                output.write(mods_bytes)
-
-    print(f"Patch RL-ANCL: Converted {converted}/{len(convert_map)} abilities to ANcl")
-    return output.getvalue()
-
-# All abilities with non-working base types (not ANcl/AOwk/AUcs)
-# Key = ability ID, Value = Ncl6 order string (matches aord/HeroDataTable)
-rl_ancl_convert_map = {
-    # Saber H000
-    "A087": "unavatar",          # Q InvisibleAir (was ANcl pre-existing)
-    "A01H": "unavengerform",     # W Caliburn (was ANcl pre-existing)
-    "A02B": "divineshield",      # R Avalon (was ANbr)
-    "A0A5": "roar",              # D SaberInstinct (was Absk)
-    # Archer H001
-    "A019": "transmute",         # Q Kanshou&Bakuya (was ANcl pre-existing)
-    "A01B": "windwalk",          # W BrokenPhantasm (was AOwk)
-    "A014": "blight",            # E RhoAias (was AHtb)
-    "A03C": "waterelemental",    # R UBW (was AEfk)
-    # Lancer H002
-    "A035": "carrionscarabs",    # Q Rune-Ansuz (was AUcb)
-    "A052": "blizzard",          # W SwiftStrikes (was Absk)
-    "A01K": "web",               # E GaeBolg (was Aweb)
-    "A028": "forceofnature",     # R FlyingSpear (was ANcs)
-    "A02T": "shockwave",         # D Rune-Ehwaz (was AIh2)
-    "A03H": "mirrorimage",       # F Rune-Berkanan (was Asta)
-    # Rider H003
-    "A01Q": "cyclone",           # Q CatenaSword (was AEfk)
-    "A01F": "metamorphosis",     # E BloodFort (was ANbr)
-    "A01E": "inferno",           # R Bellerophon (was AUin)
-    # Caster H004
-    "A049": "starfall",          # Q TerritoryCreation (was AIbt)
-    "A06L": "carrionswarm",      # R HecaticGraea (was ANhs)
-    # FakeAssassin H005
-    "A01L": "deathcoil",         # Q Gatekeeper (was ANcr)
-    "A05D": "darkportal",        # W Knowledge (was ANbr)
-    "A01O": "fingerofdeath",     # E Windblade (was AHtc)
-    "A01P": "firebolt",          # R TsubameGaeshi (was ANfd)
-    # Berserker H006
-    "A01D": "frostnova",         # W MadEnhancement (was ANbr)
-    "A00Z": "sleep",             # E Bravery (was Absk)
-    "A015": "darkconversion",    # R NineLives (was ANcs)
-    # SaberAlter H007
-    "A00B": "cripple",           # Q Tyrant (was Aroa)
-    "A07S": "recharge",          # W Vortigern (was Ambt)
-    "A024": "possession",        # E PranaBurst (was AHtc)
-    # TrueAssassin H008
-    "A09Y": "inferno",           # Q Steal (was ANfd)
-    "A018": "deathanddecay",     # W SelfReconstruction (was AEsb)
-    # Gilgamesh H009
-    "A01Y": "unavengerform",     # Q Marduk (was ANcl pre-existing)
-    "A01X": "creepthunderbolt",  # W Enkidu (was Amls)
-    "A01Z": "cloudoffog",        # E GateOfBabylon (was ANst)
-    # Avenger H028
-    "A06J": "spellsteal",        # Q KillingIntent (was ACro)
-    "A05V": "polymorph",         # W TawrichZarich (was ACpy)
-    "A05X": "drain",             # E Shade (was ANcr)
-    "A02P": "absorb",            # R VergAvesta (was Aabs)
-    # Lancelot H03M
-    "A02Z": "charm",             # Q SubmachineGun (was ANcs)
-    "A08F": "acidbomb",          # W DoubleEdgedSword (was Absk)
-    "A08S": "healingspray",      # R Arondight (was ANcr)
-    # Diarmuid H04D
-    "A0AG": "transmute",         # Q Crash (was AOcl)
-    "A0AI": "lavamonster",       # W DoubleSpearMastery (was AOw2)
-    "A0AL": "soulburn",          # E GaeBuidhe (was AUfn)
-    "A0AM": "volcano",           # R GaeDearg (was Afod)
-}
-w3a_data = patch_w3a_convert_to_ancl(w3a_data, rl_ancl_convert_map)
 
 # ============================================================
 # Patch 15: AntiMapHack removal (DeSync fix)
@@ -763,8 +387,8 @@ print("Patch RL-3a: RespawnZone 10 -> 12 (user-verified) OK")
 
 # ============================================================
 # Patch RL-3b: HeroPool order → fixed team composition
-# Team1(P0-5): Saber,Archer,Lancer,TrueAssassin,Avenger,Diarmuid
-# Team2(P6-11): Berserker,Rider,FakeAssassin,SaberAlter,Gilgamesh,Lancelot
+# Team1(P0-5): Saber,Archer,Lancer,Avenger,Gilgamesh,Lancelot
+# Team2(P6-11): Berserker,Rider,FakeAssassin,SaberAlter,Caster,TrueAssassin
 # ============================================================
 old_pool = (
     b"set s__HeroPool_max=0\n"
@@ -783,23 +407,26 @@ old_pool = (
     b"call s__HeroPool_add('H04D')\n"
     b"call s__HeroPool_add('H00I')\n"
     b"call s__HeroPool_add('E002')\n"
-    b"call s__HeroPool_add('H00A')"
+    b"call s__HeroPool_add('H00A')\n"
+    b"call s__HeroPool_add('H00O')\n"
+    b"call s__HeroPool_add('H00Y')"
 )
 new_pool = (
     b"set s__HeroPool_max=0\n"
     b"call s__HeroPool_add('H000')\n"  # P0  Saber
     b"call s__HeroPool_add('H001')\n"  # P1  Archer
     b"call s__HeroPool_add('H002')\n"  # P2  Lancer
-    b"call s__HeroPool_add('H008')\n"  # P3  TrueAssassin
+    b"call s__HeroPool_add('H03M')\n"  # P3  Lancelot
     b"call s__HeroPool_add('H028')\n"  # P4  Avenger
-    b"call s__HeroPool_add('H03M')\n"  # P5  Lancelot
-    b"call s__HeroPool_add('H006')\n"  # P6  Berserker
-    b"call s__HeroPool_add('H003')\n"  # P7  Rider
-    b"call s__HeroPool_add('H005')\n"  # P8  FakeAssassin
-    b"call s__HeroPool_add('H007')\n"  # P9  SaberAlter
-    b"call s__HeroPool_add('H009')\n"  # P10 Gilgamesh
-    b"call s__HeroPool_add('H04D')"    # P11 Diarmuid
+    b"call s__HeroPool_add('H009')\n"  # P5  Gilgamesh
+    b"call s__HeroPool_add('H007')\n"  # P6  SaberAlter
+    b"call s__HeroPool_add('H005')\n"  # P7  FakeAssassin
+    b"call s__HeroPool_add('H003')\n"  # P8  Rider
+    b"call s__HeroPool_add('H006')\n"  # P9  Berserker
+    b"call s__HeroPool_add('H004')\n"  # P10 Caster
+    b"call s__HeroPool_add('H008')"    # P11 TrueAssassin
 )
+
 assert old_pool in j_data, "HeroPool init not found"
 j_data = j_data.replace(old_pool, new_pool, 1)
 print("Patch RL-3b: HeroPool fixed order (12 heroes, planned teams) OK")
@@ -963,8 +590,6 @@ set s__Game_targetScore=70
 set s__System_randomTeam=false
 set s__System_observerOn=false
 set s__System_practiceOn=false
-call Fog(false)
-call FogEnable(false)
 call FogMaskEnable(false)
 set rl_spawn_lx[0]=-6888.0
 set rl_spawn_ly[0]=5085.0
@@ -1090,7 +715,19 @@ assert old_game_end in j_data, "s__Game_end victory text not found"
 j_data = j_data.replace(old_game_end, new_game_end, 1)
 print("Patch RL-14: s__Game_end RL_DONE event added OK")
 
-# (Patch RL-15 removed — string display functions are NOT the crash cause)
+# ============================================================
+# Patch RL-15: Fix command seal charges — I00Q starts at 12
+# UnitAddItemById only uses item's default charge count (may be 0).
+# Explicitly set charges to 12 after adding the item.
+# ============================================================
+old_seal_init = "call UnitAddItemById((UnitIndexer___e[(s__User_grail[this])]),'I00Q')".encode('utf-8')
+new_seal_init = "call UnitAddItemById((UnitIndexer___e[(s__User_grail[this])]),'I00Q')\ncall SetItemCharges(UnitItemInSlot((UnitIndexer___e[(s__User_grail[this])]),1),12)".encode('utf-8')
+seal_count = j_data.count(old_seal_init)
+assert seal_count >= 1, "I00Q UnitAddItemById not found in JASS"
+j_data = j_data.replace(old_seal_init, new_seal_init)
+print(f"Patch RL-15: Seal charges init to 12 OK ({seal_count} locations)")
+
+# (Patch RL-16 removed — string display functions are NOT the crash cause)
 
 # ============================================================
 # w3i patch - map name
@@ -1188,6 +825,14 @@ tmp_files = {
     r".\tmps\_t.skin": (skin_data, b"war3mapSkin.txt"),
 }
 
+out = r".\fateanother_rl.w3x"
+outs = [
+  r".\fateanother_rl.w3x",
+  r"C:\Users\kurtz\Desktop\FateAnotherRL\War3Client\Maps\rl\fateanother_rl.w3x",
+  r"C:\Users\kurtz\Desktop\FateAnotherRL\War3Client\Maps\fateanother_rl.w3x",
+  r"C:\Users\kurtz\OneDrive\문서\Warcraft III\Maps\rl\fateanother_rl.w3x",
+]
+
 # Create tmps directory if not exists
 os.makedirs(r".\tmps", exist_ok=True)
 
@@ -1220,8 +865,9 @@ elif len(new_hdr) > len(old_hdr):
 
 assert old_hdr in raw[:512], "W3X header map name not found"
 raw = raw[:512].replace(old_hdr, new_hdr, 1) + raw[512:]
-with open(out, "wb") as f:
-    f.write(raw)
+for ooo in outs:
+    with open(ooo, "wb") as f:
+        f.write(raw)
 print("Patch w3x header: 2.6A -> 2.6RL OK")
 
 # Copy to WC3 directory for -loadfile auto-start

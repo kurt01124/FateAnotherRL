@@ -68,11 +68,7 @@ pip-wheel-metadata/
 # ------------------------------------------------------------
 # Data directories (large runtime data — do NOT commit)
 # ------------------------------------------------------------
-/data/rollouts/
-/data/checkpoints/
-/data/runs/
-
-# NOTE: /data/models/ IS committed (*.pt tracked via LFS)
+/data/
 
 # Top-level training artifact dirs
 /checkpoints/
@@ -88,11 +84,12 @@ tmps/
 
 # Logs
 *.log
-/War3Client/logs/runtime/
 
 # ------------------------------------------------------------
-# Large archives (War3Client content is in the directory itself)
+# Runtime directories — do NOT commit
 # ------------------------------------------------------------
+/War3Client/
+/out/
 War3Client.zip
 *.7z
 *.rar
@@ -114,6 +111,9 @@ Thumbs.db
 desktop.ini
 
 # ------------------------------------------------------------
+# Claude memory files
+CLAUDE.md
+
 # IDE / Editor files
 # ------------------------------------------------------------
 .vscode/

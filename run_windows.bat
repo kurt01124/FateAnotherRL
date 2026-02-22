@@ -127,7 +127,7 @@ REM -- 7. Launch WC3 --
 echo [7/7] Launching Warcraft III...
 
 cd /d "%ROOT%\War3Client"
-set WC3_SPEED_MULTIPLIER=10
+set WC3_SPEED_MULTIPLIER=1
 start "" JNLoader.exe -loadfile "Maps\rl\fateanother_rl.w3x" -window
 cd /d "%ROOT%"
 

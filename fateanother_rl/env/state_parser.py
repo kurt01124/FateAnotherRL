@@ -58,8 +58,10 @@ def split_perspectives(state: dict) -> list[AgentObs]:
             enemies = [units[j] for j in range(6)]
 
         self_vec = encode_self(my_unit)
-        ally_vecs = np.stack([encode_ally(a) for a in allies])
-        enemy_vecs = np.stack([encode_enemy(e) for e in enemies])
+        my_x = my_unit.get("x", 0.0)
+        my_y = my_unit.get("y", 0.0)
+        ally_vecs = np.stack([encode_ally(a, my_x, my_y) for a in allies])
+        enemy_vecs = np.stack([encode_enemy(e, my_x, my_y) for e in enemies])
         global_vec = encode_global(global_data, team, shop)
         grid = encode_grid(grids, team, units)
         masks = encode_masks(my_unit.get("action_mask", {}))
@@ -179,15 +181,15 @@ def encode_self(unit: dict) -> np.ndarray:
     return result
 
 
-def encode_ally(unit: dict) -> np.ndarray:
+def encode_ally(unit: dict, my_x: float = 0.0, my_y: float = 0.0) -> np.ndarray:
     """Encode one ally unit → (ALLY_DIM,) float32 vector.
 
     Dimensions:
       basic(6) + stats(5) + combat(3) + growth(1) + skill_cd(6)
       + buffs(6) + alive(1) + seal_charges(1) + faire(1) + vel(2) = 32
-      Padded to ALLY_DIM=37 with zeros if needed.
+      + rel_polar(2) + padding(3) = 37
 
-    Actual layout: 6+5+3+1+6+6+1+1+1+2 = 32, then 5 zero-padding to reach 37.
+    Actual layout: 32 data + 2 rel_polar + 3 zero-padding to reach ALLY_DIM=37.
     """
     if not unit.get("alive", False):
         return np.zeros(ALLY_DIM, dtype=np.float32)
@@ -241,20 +243,26 @@ def encode_ally(unit: dict) -> np.ndarray:
     v.append(unit.get("vel_x", 0) / 500.0)
     v.append(unit.get("vel_y", 0) / 500.0)
 
-    # Padding (5) — reserved for future fields (atk_spd, atk_range, etc.)
-    v.extend([0.0] * 5)
+    # Relative polar coordinates (2) — using padding slots [32],[33]
+    dx = unit.get("x", 0) - my_x
+    dy = unit.get("y", 0) - my_y
+    v.append(np.arctan2(dy, dx) / np.pi)         # rel_angle [-1, 1]
+    v.append(np.sqrt(dx * dx + dy * dy) / 10000.0)  # rel_dist normalized
+
+    # Padding (3) — remaining to reach ALLY_DIM=37
+    v.extend([0.0] * 3)
 
     result = np.array(v, dtype=np.float32)
     assert result.shape[0] == ALLY_DIM, f"ally_vec dim mismatch: {result.shape[0]} != {ALLY_DIM}"
     return result
 
 
-def encode_enemy(unit: dict) -> np.ndarray:
+def encode_enemy(unit: dict, my_x: float = 0.0, my_y: float = 0.0) -> np.ndarray:
     """Encode one enemy unit → (ENEMY_DIM,) float32 vector.
 
     Dimensions:
       visible(1) + basic(6) + stats(7) + growth(2) + buffs(6) + alive(1)
-      + hero_id(12) + vel(2) + belief(4) = 41
+      + hero_id(12) + vel(2) + belief(4) + rel_polar(2) = 43
     """
     if not unit.get("alive", False):
         v = np.zeros(ENEMY_DIM, dtype=np.float32)
@@ -310,6 +318,15 @@ def encode_enemy(unit: dict) -> np.ndarray:
 
     # Belief attributes (4) - placeholder, all -1
     v.extend([-1.0] * 4)
+
+    # Relative polar coordinates (2)
+    if visible:
+        dx = unit.get("x", 0) - my_x
+        dy = unit.get("y", 0) - my_y
+        v.append(np.arctan2(dy, dx) / np.pi)         # rel_angle [-1, 1]
+        v.append(np.sqrt(dx * dx + dy * dy) / 10000.0)  # rel_dist normalized
+    else:
+        v.extend([0.0, 0.0])
 
     result = np.array(v, dtype=np.float32)
     assert result.shape[0] == ENEMY_DIM, f"enemy_vec dim mismatch: {result.shape[0]} != {ENEMY_DIM}"

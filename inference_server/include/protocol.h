@@ -114,13 +114,13 @@ struct UnitState {
     int16_t  faire_cap;
     uint8_t  _pad_econ[2];
 
-    // Flags (2 bytes)
+    // Flags (3 bytes)
     uint8_t  enemy_alarm;
-    uint8_t  visible;
+    uint16_t visible_mask;       // bit i = visible to player i (12 bits used)
 
-    // Action Masks (bit-packed, 11 bytes)
+    // Action Masks (bit-packed, 13 bytes)
     // skill(8 bits), unit_target(16 bits), skill_levelup(8 bits),
-    // stat_upgrade(16 bits), attribute(8 bits), item_buy(16 bits),
+    // stat_upgrade(16 bits), attribute(8 bits), item_buy(32 bits),
     // item_use(8 bits), seal_use(8 bits), faire_send(8 bits),
     // faire_request(8 bits), faire_respond(8 bits)
     uint8_t  mask_skill;            // 8 bits  (indices 0-7)
@@ -128,7 +128,7 @@ struct UnitState {
     uint8_t  mask_skill_levelup;    // 8 bits  (indices 0-5, 2 spare)
     uint16_t mask_stat_upgrade;     // 16 bits (indices 0-9, 6 spare)
     uint8_t  mask_attribute;        // 8 bits  (indices 0-4, 3 spare)
-    uint16_t mask_item_buy;         // 16 bits (indices 0-15)
+    uint32_t mask_item_buy;         // 32 bits (indices 0-16, 17 used)
     uint8_t  mask_item_use;         // 8 bits  (indices 0-6, 1 spare)
     uint8_t  mask_seal_use;         // 8 bits  (indices 0-6, 1 spare)
     uint8_t  mask_faire_send;       // 8 bits  (indices 0-5, 2 spare)
@@ -210,7 +210,7 @@ struct UnitAction {
     uint8_t  skill_levelup;     // 0-5
     uint8_t  stat_upgrade;      // 0-9
     uint8_t  attribute;         // 0-4
-    uint8_t  item_buy;          // 0-15
+    uint8_t  item_buy;          // 0-16
     uint8_t  item_use;          // 0-6
     uint8_t  seal_use;          // 0-6
     uint8_t  faire_send;        // 0-5
@@ -251,5 +251,8 @@ inline bool mask_bit(uint8_t mask, int bit) {
     return (mask >> bit) & 1;
 }
 inline bool mask_bit16(uint16_t mask, int bit) {
+    return (mask >> bit) & 1;
+}
+inline bool mask_bit32(uint32_t mask, int bit) {
     return (mask >> bit) & 1;
 }

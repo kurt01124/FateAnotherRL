@@ -240,7 +240,7 @@ def step_map():
             print(f"    {line}")
         sys.exit(1)
 
-    patched = os.path.join(MAPPATCH_DIR, "fateanother_now.w3x")
+    patched = os.path.join(MAPPATCH_DIR, "fateanother_rl.w3x")
     os.makedirs(map_dest, exist_ok=True)
     shutil.copy2(patched, map_file)
     log("  Map patched", "green")
