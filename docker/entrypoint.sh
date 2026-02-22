@@ -20,6 +20,13 @@ export INFERENCE_HOST="${INFERENCE_HOST:-127.0.0.1}"
 export INFERENCE_PORT="${INFERENCE_PORT:-7777}"
 export RL_RECV_PORT="${RL_RECV_PORT:-7778}"
 
+# Wine registry로 환경변수 전달 (.NET은 Linux env를 직접 못 읽음)
+wine reg add "HKCU\\Environment" /v WC3_SPEED_MULTIPLIER /t REG_SZ /d "${WC3_SPEED_MULTIPLIER:-1}" /f 2>/dev/null
+wine reg add "HKCU\\Environment" /v INFERENCE_HOST /t REG_SZ /d "${INFERENCE_HOST}" /f 2>/dev/null
+wine reg add "HKCU\\Environment" /v INFERENCE_PORT /t REG_SZ /d "${INFERENCE_PORT}" /f 2>/dev/null
+wine reg add "HKCU\\Environment" /v RL_RECV_PORT /t REG_SZ /d "${RL_RECV_PORT}" /f 2>/dev/null
+wineserver --wait 2>/dev/null || true
+
 echo "=== FateAnother RL WC3 Container ==="
 echo "  Map: ${MAP_PATH}"
 echo "  Speed: ${SPEED:-1x (default)}"
