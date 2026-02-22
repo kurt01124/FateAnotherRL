@@ -14,12 +14,12 @@ echo "=== FateAnother Inference Server ==="
 echo "  Port: ${PORT}, Action: ${ACTION_PORT}, Device: ${DEVICE}"
 echo "  Model: ${MODEL_DIR}, Rollout: ${ROLLOUT_DIR}, Size: ${ROLLOUT_SIZE}"
 
-# Wait for trainer to create initial model
-echo "Waiting for model_latest.pt..."
-while [ ! -f "${MODEL_DIR}/model_latest.pt" ]; do
+# Wait for trainer to create initial per-hero models
+echo "Waiting for per-hero models (H000.pt ...)..."
+while [ ! -f "${MODEL_DIR}/H000.pt" ]; do
     sleep 2
 done
-echo "Model found! Starting inference server..."
+echo "Models found! Starting inference server..."
 
 exec fate_inference_server \
     --port "${PORT}" \
