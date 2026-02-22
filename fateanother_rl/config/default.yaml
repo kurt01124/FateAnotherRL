@@ -16,7 +16,7 @@ ppo:
   ent_coef: 0.01
   max_grad_norm: 0.5
   ppo_epochs: 4
-  batch_size: 64
+  batch_size: 4096
   seq_len: 16
 
 training:
