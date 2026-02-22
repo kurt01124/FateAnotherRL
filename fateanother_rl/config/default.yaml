@@ -15,7 +15,7 @@ ppo:
   vf_coef: 0.5
   max_grad_norm: 0.5
   ppo_epochs: 4
-  batch_size: 4096
+  batch_size: 512
   seq_len: 16
 
 adaptive:
