@@ -1,14 +1,14 @@
 name: fateanother
 
-# FateAnother RL v4 — Scaled Architecture (5 Inference Shards)
+# FateAnother RL v4 — Scaled Architecture (15 Inference Shards, 25x speed)
 #
-# 1 Trainer (Python/GPU)  → 모델 학습, model_latest.pt 갱신
-# 5 Inference (C++/GPU)   → 각각 3 WC3 담당, model hot-reload
-# 15 WC3 (3 per inference) → 게임 실행, STATE 전송
+# 1 Trainer (Python/GPU)  → 모델 학습, per-hero .pt 갱신
+# 15 Inference (C++/GPU)  → 각각 WC3 1개 담당 (25x), model hot-reload
+# 15 WC3 (1 per inference) → 게임 실행, STATE 전송
 # 1 TensorBoard           → 학습 모니터링
 #
-# 최적 비율: WC3 3개 : 추론 1개 (검증 완료)
-# 모든 추론 서버가 공유 볼륨의 model_latest.pt를 hot-reload
+# 25x 속도: WC3 1개 : 추론 1개 (1:1 비율)
+# 모든 추론 서버가 공유 볼륨의 per-hero .pt를 hot-reload
 #
 # Usage:
 #   docker compose -f docker/docker-compose.v4.yml up -d
@@ -84,7 +84,7 @@ services:
     restart: unless-stopped
     shm_size: "256m"
 
-  # ── Inference Servers (C++ libtorch, GPU × 5) ──
+  # ── Inference Servers (C++ libtorch, GPU × 15) ──
   inference-1:
     <<: *inference
     container_name: fate-inf-1
@@ -120,7 +120,77 @@ services:
       rlnet:
         ipv4_address: 172.30.0.24
 
-  # ── WC3 Groups (3 replicas × 5 groups = 15 instances) ──
+  inference-6:
+    <<: *inference
+    container_name: fate-inf-6
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.25
+
+  inference-7:
+    <<: *inference
+    container_name: fate-inf-7
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.26
+
+  inference-8:
+    <<: *inference
+    container_name: fate-inf-8
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.27
+
+  inference-9:
+    <<: *inference
+    container_name: fate-inf-9
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.28
+
+  inference-10:
+    <<: *inference
+    container_name: fate-inf-10
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.29
+
+  inference-11:
+    <<: *inference
+    container_name: fate-inf-11
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.30
+
+  inference-12:
+    <<: *inference
+    container_name: fate-inf-12
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.31
+
+  inference-13:
+    <<: *inference
+    container_name: fate-inf-13
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.32
+
+  inference-14:
+    <<: *inference
+    container_name: fate-inf-14
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.33
+
+  inference-15:
+    <<: *inference
+    container_name: fate-inf-15
+    networks:
+      rlnet:
+        ipv4_address: 172.30.0.34
+
+  # ── WC3 Groups (1 replica × 15 groups = 15 instances) ──
   wc3-g1:
     image: fateanother-wc3:latest
     depends_on:
@@ -180,6 +250,136 @@ services:
     environment:
       <<: *wc3-env
       INFERENCE_HOST: "172.30.0.24"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g6:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-6
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.25"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g7:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-7
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.26"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g8:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-8
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.27"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g9:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-9
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.28"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g10:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-10
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.29"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g11:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-11
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.30"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g12:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-12
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.31"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g13:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-13
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.32"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g14:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-14
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.33"
+    networks:
+      - rlnet
+    restart: unless-stopped
+    deploy:
+      <<: *wc3-deploy
+
+  wc3-g15:
+    image: fateanother-wc3:latest
+    depends_on:
+      - inference-15
+    environment:
+      <<: *wc3-env
+      INFERENCE_HOST: "172.30.0.34"
     networks:
       - rlnet
     restart: unless-stopped
