@@ -506,6 +506,9 @@ class RolloutTrainer:
             self.tb_logger.log_scalar(f"best/{hero_id}_ema", self.ema_reward[hero_id], iteration)
             self.tb_logger.log_scalar(f"best/{hero_id}_best", self.best_reward[hero_id], iteration)
 
+        # Flush to disk immediately (protect against OOM kills)
+        self.tb_logger.writer.flush()
+
         logger.info(
             "Iter %d | %d trans (%d rollouts) | %.1fs | policy=%.4f value=%.4f "
             "ent=%.4f kl=%.4f | ent_coef=%.5f gamma=%.5f",
