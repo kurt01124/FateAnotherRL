@@ -46,14 +46,14 @@ x-inference: &inference
   shm_size: "128m"
 
 x-wc3-env: &wc3-env
-  WC3_SPEED_MULTIPLIER: "${WC3_SPEED:-10}"
+  WC3_SPEED_MULTIPLIER: "${WC3_SPEED:-25}"
   INFERENCE_PORT: "7777"
   RL_RECV_PORT: "7778"
   WINEDEBUG: "-all"
   VIS_HERO_ONLY: "${VIS_HERO_ONLY:-0}"
 
 x-wc3-deploy: &wc3-deploy
-  replicas: 3
+  replicas: 1
   resources:
     limits:
       memory: 5G
