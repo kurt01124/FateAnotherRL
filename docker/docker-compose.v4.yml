@@ -74,7 +74,6 @@ services:
       LOG_DIR: "/data/runs"
       FRESH_START: "${FRESH_START:-0}"
       RESUME: "${RESUME:-auto}"
-      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     volumes:
       - data:/data
     deploy:
