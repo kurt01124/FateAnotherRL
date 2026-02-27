@@ -694,6 +694,20 @@ for ai in ai_names:
 print(f"Patch RL-7b: Disabled {ai_count} custom AI inits OK")
 
 # ============================================================
+# Patch RL-7c: Disable computer player AI triggers
+# ============================================================
+# When a hero is created for a computer player, AI starts via s__*AI_Start.
+# Disable all MAP_CONTROL_COMPUTER checks to prevent AI from starting.
+ai_start_count = 0
+for ai in ai_names:
+    # Pattern: call s__*AI_Start(u)
+    old_start = b'call s__' + ai + b'_Start(u)'
+    if old_start in j_data:
+        j_data = j_data.replace(old_start, b'// RL: disabled ' + ai + b'_Start')
+        ai_start_count += 1
+print(f"Patch RL-7c: Disabled {ai_start_count} computer AI start calls OK")
+
+# ============================================================
 # Patch RL-8: Hook hero creation to set rl_hero1/rl_hero2
 # ============================================================
 # s__User_initialize is called when a hero is created.

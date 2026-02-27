@@ -502,6 +502,125 @@ namespace RLComm
         [DllImport("user32.dll")]
         private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
+        // ---- Focus Pause Prevention (WndProc subclassing) ----
+        private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrA")]
+        private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongA")]
+        private static extern IntPtr SetWindowLongPtr32(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrA")]
+        private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongA")]
+        private static extern IntPtr GetWindowLongPtr32(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallWindowProcA(IntPtr lpPrevWndFunc, IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        private const int GWL_WNDPROC = -4;
+        private const uint WM_ACTIVATEAPP = 0x001C;
+        private const uint WM_ACTIVATE = 0x0006;
+
+        private static IntPtr _originalWndProc = IntPtr.Zero;
+        private static WndProcDelegate _wndProcDelegate;  // prevent GC
+        private static bool _focusPauseDisabled = false;
+
+        private static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
+        {
+            return IntPtr.Size == 8
+                ? SetWindowLongPtr64(hWnd, nIndex, dwNewLong)
+                : SetWindowLongPtr32(hWnd, nIndex, dwNewLong);
+        }
+
+        private static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex)
+        {
+            return IntPtr.Size == 8
+                ? GetWindowLongPtr64(hWnd, nIndex)
+                : GetWindowLongPtr32(hWnd, nIndex);
+        }
+
+        private static IntPtr FocusPauseWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
+        {
+            // Intercept WM_ACTIVATEAPP when wParam=0 (losing focus) - return 0 to ignore
+            if (msg == WM_ACTIVATEAPP && wParam == IntPtr.Zero)
+            {
+                // Pretend we're still active - don't pass to original WndProc
+                return IntPtr.Zero;
+            }
+            // Intercept WM_ACTIVATE when LOWORD(wParam)=0 (WA_INACTIVE)
+            if (msg == WM_ACTIVATE && ((int)wParam & 0xFFFF) == 0)
+            {
+                return IntPtr.Zero;
+            }
+            return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, lParam);
+        }
+
+        private static void InstallFocusPauseHookAsync()
+        {
+            // Check if focus pause prevention is disabled via env var
+            string disableFocusPause = Environment.GetEnvironmentVariable("RL_DISABLE_FOCUS_HOOK");
+            if (disableFocusPause == "1")
+            {
+                Log("[RLComm] FocusPause: DISABLED (RL_DISABLE_FOCUS_HOOK=1)");
+                return;
+            }
+
+            Thread focusThread = new Thread(() =>
+            {
+                try
+                {
+                    // Wait for WC3 window to exist
+                    IntPtr hwnd = IntPtr.Zero;
+                    for (int r = 0; r < 30 && hwnd == IntPtr.Zero; r++)
+                    {
+                        Thread.Sleep(500);
+                        hwnd = FindWindowA("Warcraft III", null);
+                    }
+                    if (hwnd == IntPtr.Zero)
+                    {
+                        Log("[RLComm] FocusPause: window not found after 15s");
+                        return;
+                    }
+                    InstallFocusPauseHook(hwnd);
+                }
+                catch (Exception ex)
+                {
+                    Log($"[RLComm] FocusPause thread error: {ex.Message}");
+                }
+            });
+            focusThread.IsBackground = true;
+            focusThread.Start();
+        }
+
+        private static void InstallFocusPauseHook(IntPtr hwnd)
+        {
+            if (_focusPauseDisabled || hwnd == IntPtr.Zero) return;
+
+            try
+            {
+                _wndProcDelegate = new WndProcDelegate(FocusPauseWndProc);
+                IntPtr newProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate);
+                _originalWndProc = SetWindowLongPtr(hwnd, GWL_WNDPROC, newProc);
+
+                if (_originalWndProc != IntPtr.Zero)
+                {
+                    _focusPauseDisabled = true;
+                    Log($"[RLComm] FocusPause: WndProc subclassed, original=0x{_originalWndProc.ToInt64():X8}");
+                }
+                else
+                {
+                    Log("[RLComm] FocusPause: SetWindowLongPtr failed");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[RLComm] FocusPause: Error - {ex.Message}");
+            }
+        }
+
         private const uint WM_KEYDOWN = 0x100;
         private const uint WM_KEYUP = 0x101;
 
@@ -2540,9 +2659,14 @@ namespace RLComm
                 for (int ui = 0; ui < 9; ui++)
                     upgradesArr.Add(JassStateCache.upgrades[i, ui]);
 
-                // Attributes: derived from attrCount (sequential acquisition: first, second, third, fourth)
-                int attrCount = JassStateCache.attrCount[i];
-                var attrArr = new JArray(attrCount >= 1, attrCount >= 2, attrCount >= 3, attrCount >= 4);
+                // Attributes: per-attribute acquisition count (first, second, third, fourth)
+                // Each attribute can be acquired multiple times (hero-dependent max)
+                var attrArr = new JArray(
+                    JassStateCache.attrAcquired[i, 1],  // First attribute acquired count
+                    JassStateCache.attrAcquired[i, 2],  // Second attribute acquired count
+                    JassStateCache.attrAcquired[i, 3],  // Third attribute acquired count
+                    JassStateCache.attrAcquired[i, 4]   // Fourth attribute acquired count
+                );
 
                 // Buffs detection via GetUnitAbilityLevel
                 bool isStunned = false, isSlowed = false, isSilenced = false;
@@ -2917,7 +3041,7 @@ namespace RLComm
             bool alive, float mp, int gold, int skillPoints, int statPoints, float gameTime)
         {
             // If dead, all masks are false except "none" options (index 0)
-            // Exception: seal_use[5]=revive may be available
+            // Exception: seal_use[5]=revive and item_buy[1-6]=faire may be available
             if (!alive)
             {
                 var deadMask = BuildEmptyActionMask();
@@ -2930,6 +3054,15 @@ namespace RLComm
                 if (sealCharges >= reviveCost && JassStateCache.sealCd[heroIdx] <= 0)
                 {
                     ((JArray)deadMask["seal_use"])[5] = true;
+                }
+
+                // Check if faire (기사회생) is available (item_buy[1-6])
+                // When dead, only 2(+3레벨) and 3(+12스탯) available (no item slot needed)
+                bool faireAvailableDead = (_advCount[heroIdx] / 7) > _faireUsed[heroIdx];
+                if (faireAvailableDead)
+                {
+                    ((JArray)deadMask["item_buy"])[2] = true;  // +3레벨
+                    ((JArray)deadMask["item_buy"])[3] = true;  // +12스탯
                 }
 
                 return deadMask;
@@ -3017,7 +3150,6 @@ namespace RLComm
             // ---- Skill levelup mask (size 6): 0=none, 1=Q, 2=W, 3=E, 4=R, 5=allstat ----
             var skillLevelupMask = new JArray();
             skillLevelupMask.Add(true); // 0=none
-            bool allQwerMaxed = true;
             for (int s = 0; s < 4; s++) // Q,W,E,R
             {
                 bool canLevel = false;
@@ -3027,18 +3159,16 @@ namespace RLComm
                     int checkAbilId = si.learnAbilId != 0 ? si.learnAbilId : si.abilId;
                     int curLevel = 0;
                     try { curLevel = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)checkAbilId); } catch { }
-                    int maxLevel = s == 3 ? 3 : 5; // R usually max 3, others max 5
+                    int maxLevel = 5; // All QWER skills max at level 5
                     canLevel = curLevel < maxLevel;
-                    if (curLevel < 5) allQwerMaxed = false;
-                }
-                else
-                {
-                    allQwerMaxed = false;
                 }
                 skillLevelupMask.Add(skillPoints > 0 && canLevel);
             }
-            // 5=allstat: requires skill_points>0 AND all QWER at level 5
-            skillLevelupMask.Add(skillPoints > 0 && allQwerMaxed);
+            // 5=allstat (+2 str/agi/int): requires heroLevel >= 5 + (currentAllStatLevel * 2), capped at 17
+            int allStatLevel = 0;
+            try { allStatLevel = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)FourCC("Aall")); } catch { }
+            int requiredLevel = Math.Min(5 + (allStatLevel * 2), 17);
+            skillLevelupMask.Add(skillPoints > 0 && heroLevel >= requiredLevel);
 
             // ---- Stat upgrade mask (size 10): 0=none, 1-9=stats ----
             var statUpgradeMask = new JArray();
@@ -3071,10 +3201,12 @@ namespace RLComm
             var itemBuyMask = new JArray();
             itemBuyMask.Add(true); // 0=none
             // idx 1-6: faire options (available when advCount/7 > faireUsed)
+            // 2=+3레벨, 3=+12스탯 don't require item slot; others do
             bool faireAvailable = (_advCount[heroIdx] / 7) > _faireUsed[heroIdx];
             for (int bi = 1; bi <= 6; bi++)
             {
-                itemBuyMask.Add(faireAvailable && hasSlot);
+                bool needsSlot = (bi != 2 && bi != 3);  // 2,3 don't need slot
+                itemBuyMask.Add(faireAvailable && (!needsSlot || hasSlot));
             }
             for (int bi = 7; bi <= 17; bi++)
             {
@@ -3219,7 +3351,7 @@ namespace RLComm
             bool alive, float mp, int gold, int skillPoints, int statPoints, float gameTime)
         {
             // If dead, all masks are false except "none" options (index 0)
-            // Exception: seal_use[5]=revive may be available
+            // Exception: seal_use[5]=revive and item_buy[1-6]=faire may be available
             if (!alive)
             {
                 var deadMask = BuildEmptyActionMaskBits();
@@ -3232,6 +3364,15 @@ namespace RLComm
                 if (sealCharges >= reviveCost && JassStateCache.sealCd[heroIdx] <= 0)
                 {
                     deadMask.sealUse |= (byte)(1 << 5);
+                }
+
+                // Check if faire (기사회생) is available (item_buy[1-6])
+                // When dead, only 2(+3레벨) and 3(+12스탯) available (no item slot needed)
+                bool faireAvailableDeadB = (_advCount[heroIdx] / 7) > _faireUsed[heroIdx];
+                if (faireAvailableDeadB)
+                {
+                    deadMask.itemBuy |= (uint)(1 << 2);  // +3레벨
+                    deadMask.itemBuy |= (uint)(1 << 3);  // +12스탯
                 }
 
                 return deadMask;
@@ -3317,7 +3458,6 @@ namespace RLComm
 
             // ---- Skill levelup mask (size 6): 0=none, 1=Q, 2=W, 3=E, 4=R, 5=allstat ----
             result.skillLevelup = 0x01; // bit 0 = none
-            bool allQwerMaxed = true;
             for (int s = 0; s < 4; s++) // Q,W,E,R
             {
                 bool canLevel = false;
@@ -3327,18 +3467,16 @@ namespace RLComm
                     int checkAbilId = si.learnAbilId != 0 ? si.learnAbilId : si.abilId;
                     int curLevel = 0;
                     try { curLevel = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)checkAbilId); } catch { }
-                    int maxLevel = s == 3 ? 3 : 5; // R usually max 3, others max 5
+                    int maxLevel = 5; // All QWER skills max at level 5
                     canLevel = curLevel < maxLevel;
-                    if (curLevel < 5) allQwerMaxed = false;
-                }
-                else
-                {
-                    allQwerMaxed = false;
                 }
                 if (skillPoints > 0 && canLevel) result.skillLevelup |= (byte)(1 << (s + 1));
             }
-            // 5=allstat: requires skill_points>0 AND all QWER at level 5
-            if (skillPoints > 0 && allQwerMaxed) result.skillLevelup |= (byte)(1 << 5);
+            // 5=allstat (+2 str/agi/int): requires heroLevel >= 5 + (currentAllStatLevel * 2), capped at 17
+            int allStatLevelB = 0;
+            try { allStatLevelB = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)FourCC("Aall")); } catch { }
+            int requiredLevelB = Math.Min(5 + (allStatLevelB * 2), 17);
+            if (skillPoints > 0 && heroLevel >= requiredLevelB) result.skillLevelup |= (byte)(1 << 5);
 
             // ---- Stat upgrade mask (size 10): 0=none, 1-9=stats ----
             result.statUpgrade = 0x0001; // bit 0 = none
@@ -3368,10 +3506,12 @@ namespace RLComm
             bool hasSlot = HasEmptyItemSlot(u);
             result.itemBuy = 0x00000001u; // bit 0 = none
             // idx 1-6: faire options (available when advCount/7 > faireUsed)
+            // 2=+3레벨, 3=+12스탯 don't require item slot; others do
             bool faireAvailableB = (_advCount[heroIdx] / 7) > _faireUsed[heroIdx];
             for (int bi = 1; bi <= 6; bi++)
             {
-                if (faireAvailableB && hasSlot) result.itemBuy |= (uint)(1 << bi);
+                bool needsSlot = (bi != 2 && bi != 3);
+                if (faireAvailableB && (!needsSlot || hasSlot)) result.itemBuy |= (uint)(1 << bi);
             }
             for (int bi = 7; bi <= 17; bi++)
             {
@@ -4247,6 +4387,10 @@ namespace RLComm
                         if (sealUse > 0)
                             ExecuteSealUse(idx, u, sealUse, pointX, pointY);
 
+                        // 7a. Faire (기사회생) - can be used while dead (item_buy 1-6)
+                        if (itemBuy >= 1 && itemBuy <= 6)
+                            ExecuteItemBuy(idx, u, itemBuy);
+
                         // Re-check alive after potential revive
                         alive = IsUnitAlive(u);
                         if (!alive) continue;
@@ -4373,6 +4517,10 @@ namespace RLComm
                     // 9. Seal use (process first since revive can bring dead hero back)
                     if (sealUse > 0)
                         ExecuteSealUse(idx, u, sealUse, pointX, pointY);
+
+                    // 7a. Faire (기사회생) - can be used while dead (item_buy 1-6)
+                    if (itemBuy >= 1 && itemBuy <= 6)
+                        ExecuteItemBuy(idx, u, itemBuy);
 
                     // Re-check alive after potential revive
                     alive = IsUnitAlive(u);
@@ -4796,25 +4944,16 @@ namespace RLComm
                 }
                 else if (skillLevelup == 5)
                 {
-                    // All-stat: +2 str, +2 agi, +2 int (requires all QWER at level 5)
-                    int typeId = (int)Natives.GetUnitTypeId(u);
-                    HeroData hdata;
-                    if (!_heroDataTable.TryGetValue(typeId, out hdata)) return;
+                    // All-stat: +2 str, +2 agi, +2 int
+                    // Requires heroLevel >= 5 + (currentAllStatLevel * 2), capped at 17
+                    int heroLevel = (int)Natives.GetHeroLevel(u);
+                    int allStatLevel = 0;
+                    try { allStatLevel = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)FourCC("Aall")); } catch { }
+                    int requiredLevel = Math.Min(5 + (allStatLevel * 2), 17);
+                    if (heroLevel < requiredLevel) return;
 
-                    // Verify all QWER at level 5
-                    for (int s = 0; s < 4; s++)
-                    {
-                        if (s >= hdata.skills.Length || hdata.skills[s].abilId == 0) return;
-                        int lv = (int)Natives.GetUnitAbilityLevel(u, (JassObjectId)hdata.skills[s].abilId);
-                        if (lv < 5) return;
-                    }
-
-                    int curStr = (int)Natives.GetHeroStr(u, false);
-                    int curAgi = (int)Natives.GetHeroAgi(u, false);
-                    int curInt = (int)Natives.GetHeroInt(u, false);
-                    Natives.SetHeroStr(u, curStr + 2, true);
-                    Natives.SetHeroAgi(u, curAgi + 2, true);
-                    Natives.SetHeroInt(u, curInt + 2, true);
+                    // Use SelectHeroSkill to learn Aall (this increases Aall level and applies +2/+2/+2)
+                    Natives.SelectHeroSkill(u, (JassObjectId)FourCC("Aall"));
                     // Deduct skill point
                     Natives.UnitModifySkillPoints(u, -1);
                     Log($"[RLComm] AllStat: p{idx} str+2 agi+2 int+2");
@@ -5687,7 +5826,10 @@ namespace RLComm
                 Log("[RLComm] Speed: WC3_SPEED_MULTIPLIER not set or <=1, normal speed");
             }
 
-            // 4. Loading screen -- poll-based keybd_event (Docker/Wine only)
+            // 4. Focus-pause prevention hook (always install unless disabled)
+            InstallFocusPauseHookAsync();
+
+            // 5. Loading screen -- poll-based keybd_event (Docker/Wine only)
             string noDismiss = Environment.GetEnvironmentVariable("RL_NO_DISMISS");
             if (noDismiss == null || noDismiss != "1")
                 DismissLoadingLoop();
