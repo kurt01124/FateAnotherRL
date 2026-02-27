@@ -150,9 +150,27 @@ class RolloutBuffer:
             "returns": None,
         }
 
+        # FATE v2 optional fields (backward compatible with v1)
+        buf._td["format_version"] = data.get("__version__", None)
+        buf._td["events"] = data.get("events", None)
+        buf._td["event_counts"] = data.get("event_counts", None)
+        buf._td["prev_hp"] = data.get("prev_hp", None)
+        buf._td["prev_max_hp"] = data.get("prev_max_hp", None)
+        buf._td["prev_score_t0"] = data.get("prev_score_t0", None)
+        buf._td["prev_score_t1"] = data.get("prev_score_t1", None)
+        buf._td["game_time"] = data.get("game_time", None)
+        buf._td["unit_alive"] = data.get("unit_alive", None)
+        buf._td["unit_level"] = data.get("unit_level", None)
+        buf._td["unit_x"] = data.get("unit_x", None)
+        buf._td["unit_y"] = data.get("unit_y", None)
+        buf._td["skill_points"] = data.get("skill_points", None)
+        buf._td["model_version"] = data.get("model_version", None)
+
+        is_v2 = buf._td["format_version"] is not None
         logger.info(
-            "Buffer loaded: T=%d, agents=%d, transitions=%d, actions=%s",
+            "Buffer loaded: T=%d, agents=%d, transitions=%d, format=%s, actions=%s",
             T, A, T * A,
+            f"v{buf._td['format_version'].item()}" if is_v2 else "v1",
             {k: list(v.shape) for k, v in actions.items()},
         )
         return buf
@@ -496,9 +514,29 @@ class TensorRolloutBuffer:
         self.advantages = None
         self.returns = None
 
+        # === FATE v2 optional fields ===
+        # These are None for v1 rollouts, populated for v2.
+        # Use data.get() for backward compatibility with v1 format.
+        self.format_version = data.get("__version__", None)  # (1,) int32, value=2 if v2
+        self.events = data.get("events", None)                # (T, 12, 4, 4) int32
+        self.event_counts = data.get("event_counts", None)    # (T, 12) int32
+        self.prev_hp = data.get("prev_hp", None)              # (T, 12) float32
+        self.prev_max_hp = data.get("prev_max_hp", None)      # (T, 12) float32
+        self.prev_score_t0 = data.get("prev_score_t0", None)  # (T,) int32
+        self.prev_score_t1 = data.get("prev_score_t1", None)  # (T,) int32
+        self.game_time = data.get("game_time", None)          # (T,) float32
+        self.unit_alive = data.get("unit_alive", None)        # (T, 12) int32
+        self.unit_level = data.get("unit_level", None)        # (T, 12) int32
+        self.unit_x = data.get("unit_x", None)                # (T, 12) float32
+        self.unit_y = data.get("unit_y", None)                # (T, 12) float32
+        self.skill_points = data.get("skill_points", None)    # (T, 12) int32
+        self.model_version = data.get("model_version", None)  # (1,) int32
+
+        is_v2 = self.format_version is not None
         logger.info(
-            "TensorRolloutBuffer: T=%d, agents=%d, total=%d",
+            "TensorRolloutBuffer: T=%d, agents=%d, total=%d, format=%s",
             self.T, self.num_agents, self.T * self.num_agents,
+            f"v{self.format_version.item()}" if is_v2 else "v1",
         )
 
     @classmethod
@@ -541,6 +579,25 @@ class TensorRolloutBuffer:
         merged.advantages = None
         merged.returns = None
 
+        # === FATE v2 fields: concat if present, None otherwise ===
+        v2_fields_ta = [
+            "events", "event_counts", "prev_hp", "prev_max_hp",
+            "unit_alive", "unit_level", "unit_x", "unit_y", "skill_points",
+        ]
+        v2_fields_t = ["prev_score_t0", "prev_score_t1", "game_time"]
+        v2_fields_scalar = ["format_version", "model_version"]
+
+        for field in v2_fields_ta + v2_fields_t:
+            vals = [getattr(b, field, None) for b in buffers]
+            if all(v is not None for v in vals):
+                setattr(merged, field, torch.cat(vals, dim=0))
+            else:
+                setattr(merged, field, None)
+
+        for field in v2_fields_scalar:
+            # Take from first buffer (should be same across all)
+            setattr(merged, field, getattr(buffers[0], field, None))
+
         logger.info("Merged %d buffers: total T=%d, agents=%d, transitions=%d",
                     len(buffers), merged.T, merged.num_agents, merged.T * merged.num_agents)
         return merged
@@ -570,6 +627,27 @@ class TensorRolloutBuffer:
         # Copy GAE results if computed
         sliced.advantages = self.advantages[:, agent_idx:agent_idx+1] if self.advantages is not None else None
         sliced.returns = self.returns[:, agent_idx:agent_idx+1] if self.returns is not None else None
+
+        # === FATE v2 fields ===
+        # (T, 12, ...) fields: slice agent dimension
+        v2_fields_ta = [
+            "events", "event_counts", "prev_hp", "prev_max_hp",
+            "unit_alive", "unit_level", "unit_x", "unit_y", "skill_points",
+        ]
+        for field in v2_fields_ta:
+            val = getattr(self, field, None)
+            if val is not None:
+                setattr(sliced, field, val[:, agent_idx:agent_idx+1])
+            else:
+                setattr(sliced, field, None)
+
+        # (T,) fields: copy as-is (shared across agents)
+        for field in ["prev_score_t0", "prev_score_t1", "game_time"]:
+            setattr(sliced, field, getattr(self, field, None))
+
+        # Scalar fields: copy as-is
+        for field in ["format_version", "model_version"]:
+            setattr(sliced, field, getattr(self, field, None))
 
         return sliced
 

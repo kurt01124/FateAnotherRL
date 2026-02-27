@@ -446,7 +446,14 @@ int main(int argc, char* argv[]) {
                         rewards[i],
                         false,  // not done
                         input_hx_h[i],
-                        input_hx_c[i]
+                        input_hx_c[i],
+                        // FATE v2 parameters
+                        events,
+                        inst.prev_units,
+                        units,
+                        inst.prev_global,
+                        global,
+                        0  // model_version (no version tracking yet)
                     );
                 }
             }

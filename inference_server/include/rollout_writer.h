@@ -7,17 +7,20 @@
 #include <vector>
 #include <mutex>
 #include <functional>
+#include <cstring>
 
 #include <torch/torch.h>
 
 #include "state_encoder.h"
 #include "constants.h"
+#include "protocol.h"
 
 class RolloutWriter {
 public:
     explicit RolloutWriter(const std::string& rollout_dir);
 
     /// Store a single transition for one agent in one instance.
+    /// FATE v2 extra parameters are optional (default empty/null/0) for backward compatibility.
     void store(const std::string& instance_id,
                int agent_idx,
                const torch::Tensor& self_vec,      // (77,)
@@ -32,7 +35,14 @@ public:
                float reward,
                bool done,
                const torch::Tensor& hx_h,          // (1, 1, 256)
-               const torch::Tensor& hx_c);         // (1, 1, 256)
+               const torch::Tensor& hx_c,          // (1, 1, 256)
+               // FATE v2 extra parameters
+               const std::vector<Event>& events = {},
+               const UnitState* prev_units = nullptr,
+               const UnitState* units = nullptr,
+               const GlobalState& prev_global = {},
+               const GlobalState& global_state = {},
+               int model_version = 0);
 
     /// Mark last transition as done=true and add terminal rewards.
     /// Must be called BEFORE flush_episode().
@@ -69,6 +79,33 @@ private:
         // LSTM hidden state
         torch::Tensor hx_h;        // (1, 1, 256)
         torch::Tensor hx_c;        // (1, 1, 256)
+
+        // === FATE v2 fields ===
+        std::vector<Event> events;      // events for this tick
+        float prev_hp[MAX_UNITS];       // previous tick HP
+        float prev_max_hp[MAX_UNITS];   // previous tick max HP
+        int16_t prev_score_t0;          // previous tick team0 score
+        int16_t prev_score_t1;          // previous tick team1 score
+        float game_time;                // game time (seconds)
+        uint8_t unit_alive[MAX_UNITS];  // unit alive flags
+        uint8_t unit_level[MAX_UNITS];  // unit levels
+        float unit_x[MAX_UNITS];        // unit x positions
+        float unit_y[MAX_UNITS];        // unit y positions
+        uint8_t skill_points[MAX_UNITS]; // skill points available
+        int model_version;              // model version used for this transition
+
+        Transition() : log_prob(0), value(0), reward(0), done(false),
+                       prev_score_t0(0), prev_score_t1(0), game_time(0),
+                       model_version(0)
+        {
+            std::memset(prev_hp, 0, sizeof(prev_hp));
+            std::memset(prev_max_hp, 0, sizeof(prev_max_hp));
+            std::memset(unit_alive, 0, sizeof(unit_alive));
+            std::memset(unit_level, 0, sizeof(unit_level));
+            std::memset(unit_x, 0, sizeof(unit_x));
+            std::memset(unit_y, 0, sizeof(unit_y));
+            std::memset(skill_points, 0, sizeof(skill_points));
+        }
     };
 
     // A completed episode: all 12 agents' trajectories together

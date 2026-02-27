@@ -39,7 +39,14 @@ void RolloutWriter::store(
     float reward,
     bool done,
     const torch::Tensor& hx_h,
-    const torch::Tensor& hx_c)
+    const torch::Tensor& hx_c,
+    // FATE v2 extra parameters
+    const std::vector<Event>& events,
+    const UnitState* prev_units,
+    const UnitState* units,
+    const GlobalState& prev_global,
+    const GlobalState& global_state,
+    int model_version)
 {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -63,6 +70,24 @@ void RolloutWriter::store(
     t.value    = value;
     t.reward   = reward;
     t.done     = done;
+
+    // === FATE v2 fields ===
+    t.events = events;
+    t.game_time = global_state.game_time;
+    t.model_version = model_version;
+    if (prev_units && units) {
+        for (int j = 0; j < MAX_UNITS; ++j) {
+            t.prev_hp[j]      = prev_units[j].hp;
+            t.prev_max_hp[j]  = prev_units[j].max_hp;
+            t.unit_alive[j]   = units[j].alive;
+            t.unit_level[j]   = units[j].level;
+            t.unit_x[j]       = units[j].x;
+            t.unit_y[j]       = units[j].y;
+            t.skill_points[j] = units[j].skill_points;
+        }
+        t.prev_score_t0 = prev_global.score_team0;
+        t.prev_score_t1 = prev_global.score_team1;
+    }
 
     if (agent_idx < 0 || agent_idx >= MAX_UNITS) return;
     buffers_[instance_id][agent_idx].push_back(std::move(t));
@@ -337,6 +362,116 @@ void RolloutWriter::dump_to_file(const CompletedEpisode& ep) {
     fs::path filepath = fs::path(rollout_dir_) / filename.str();
     fs::path tmppath  = fs::path(rollout_dir_) / (filename.str() + ".tmp");
 
+    // === FATE v2 tensors ===
+    // Check if any transition has v2 data (non-empty events or non-zero game_time)
+    bool has_v2 = false;
+    for (int a = 0; a < MAX_UNITS && !has_v2; ++a) {
+        for (const auto& tr : ep.agents[a]) {
+            if (!tr.events.empty() || tr.game_time != 0.0f || tr.model_version != 0) {
+                has_v2 = true;
+                break;
+            }
+        }
+    }
+
+    // v2 tensors (only built if v2 data present)
+    constexpr int MAX_EVENTS_PER_AGENT = 4;  // max events per agent per tick
+    torch::Tensor v2_events, v2_event_counts, v2_prev_hp, v2_prev_max_hp;
+    torch::Tensor v2_prev_score_t0, v2_prev_score_t1, v2_game_time;
+    torch::Tensor v2_unit_alive, v2_unit_level, v2_unit_x, v2_unit_y;
+    torch::Tensor v2_skill_points, v2_model_version, v2_version;
+
+    if (has_v2) {
+        // events: (T, 12, MAX_EVENTS_PER_AGENT, 4) int32
+        v2_events = torch::zeros({T, MAX_UNITS, MAX_EVENTS_PER_AGENT, 4}, torch::kInt32);
+        // event_counts: (T, 12) int32
+        v2_event_counts = torch::zeros({T, MAX_UNITS}, torch::kInt32);
+
+        // Per-agent scalar arrays: (T, 12)
+        v2_prev_hp     = torch::zeros({T, MAX_UNITS}, torch::kFloat32);
+        v2_prev_max_hp = torch::zeros({T, MAX_UNITS}, torch::kFloat32);
+        v2_unit_alive  = torch::zeros({T, MAX_UNITS}, torch::kInt32);
+        v2_unit_level  = torch::zeros({T, MAX_UNITS}, torch::kInt32);
+        v2_unit_x      = torch::zeros({T, MAX_UNITS}, torch::kFloat32);
+        v2_unit_y      = torch::zeros({T, MAX_UNITS}, torch::kFloat32);
+        v2_skill_points = torch::zeros({T, MAX_UNITS}, torch::kInt32);
+
+        // Per-timestep scalars: (T,)
+        v2_prev_score_t0 = torch::zeros({T}, torch::kInt32);
+        v2_prev_score_t1 = torch::zeros({T}, torch::kInt32);
+        v2_game_time     = torch::zeros({T}, torch::kFloat32);
+
+        // Accessors for efficient element-wise writes
+        auto ev_acc   = v2_events.accessor<int32_t, 4>();
+        auto ec_acc   = v2_event_counts.accessor<int32_t, 2>();
+        auto php_acc  = v2_prev_hp.accessor<float, 2>();
+        auto pmhp_acc = v2_prev_max_hp.accessor<float, 2>();
+        auto alive_acc = v2_unit_alive.accessor<int32_t, 2>();
+        auto level_acc = v2_unit_level.accessor<int32_t, 2>();
+        auto ux_acc   = v2_unit_x.accessor<float, 2>();
+        auto uy_acc   = v2_unit_y.accessor<float, 2>();
+        auto sp_acc   = v2_skill_points.accessor<int32_t, 2>();
+        auto ps0_acc  = v2_prev_score_t0.accessor<int32_t, 1>();
+        auto ps1_acc  = v2_prev_score_t1.accessor<int32_t, 1>();
+        auto gt_acc   = v2_game_time.accessor<float, 1>();
+
+        for (int t = 0; t < T; ++t) {
+            // Use agent 0's transition for per-tick global fields (same across agents)
+            const Transition* ref = nullptr;
+            for (int a = 0; a < MAX_UNITS; ++a) {
+                if (t < static_cast<int>(ep.agents[a].size())) {
+                    ref = &ep.agents[a][t];
+                    break;
+                }
+            }
+            if (ref) {
+                ps0_acc[t] = static_cast<int32_t>(ref->prev_score_t0);
+                ps1_acc[t] = static_cast<int32_t>(ref->prev_score_t1);
+                gt_acc[t]  = ref->game_time;
+            }
+
+            for (int a = 0; a < MAX_UNITS; ++a) {
+                if (t < static_cast<int>(ep.agents[a].size())) {
+                    const auto& tr = ep.agents[a][t];
+
+                    php_acc[t][a]   = tr.prev_hp[a];
+                    pmhp_acc[t][a]  = tr.prev_max_hp[a];
+                    alive_acc[t][a] = static_cast<int32_t>(tr.unit_alive[a]);
+                    level_acc[t][a] = static_cast<int32_t>(tr.unit_level[a]);
+                    ux_acc[t][a]    = tr.unit_x[a];
+                    uy_acc[t][a]    = tr.unit_y[a];
+                    sp_acc[t][a]    = static_cast<int32_t>(tr.skill_points[a]);
+
+                    // Assign events to this agent: event is relevant if killer_idx == a
+                    int count = 0;
+                    for (const auto& evt : tr.events) {
+                        if (count >= MAX_EVENTS_PER_AGENT) break;
+                        if (static_cast<int>(evt.killer_idx) == a) {
+                            ev_acc[t][a][count][0] = static_cast<int32_t>(evt.type);
+                            ev_acc[t][a][count][1] = static_cast<int32_t>(evt.killer_idx);
+                            ev_acc[t][a][count][2] = static_cast<int32_t>(evt.victim_idx);
+                            ev_acc[t][a][count][3] = static_cast<int32_t>(evt.tick);
+                            ++count;
+                        }
+                    }
+                    ec_acc[t][a] = count;
+                }
+            }
+        }
+
+        // model_version: (1,) int32 — take from first non-empty transition
+        int mv = 0;
+        for (int a = 0; a < MAX_UNITS && mv == 0; ++a) {
+            if (!ep.agents[a].empty()) {
+                mv = ep.agents[a][0].model_version;
+            }
+        }
+        v2_model_version = torch::tensor({mv}, torch::kInt32);
+
+        // __version__: (1,) int32 = 2
+        v2_version = torch::tensor({2}, torch::kInt32);
+    }
+
     // --- Save as custom binary format (FATE) ---
     // C++ libtorch serialization formats are NOT compatible with Python torch.load():
     //   OutputArchive → TorchScript zip → jit.load → ScriptModule, not dict
@@ -346,6 +481,12 @@ void RolloutWriter::dump_to_file(const CompletedEpisode& ep) {
     try {
         // Collect all named tensors
         std::vector<std::pair<std::string, torch::Tensor>> entries;
+
+        // __version__ first (if v2)
+        if (has_v2) {
+            entries.push_back({"__version__", v2_version});
+        }
+
         entries.push_back({"self_vecs", self_vecs});
         entries.push_back({"ally_vecs", ally_vecs});
         entries.push_back({"enemy_vecs", enemy_vecs});
@@ -362,6 +503,23 @@ void RolloutWriter::dump_to_file(const CompletedEpisode& ep) {
         }
         for (const auto& [name, tensor] : action_tensors) {
             entries.push_back({"act_" + name, tensor});
+        }
+
+        // FATE v2 tensors
+        if (has_v2) {
+            entries.push_back({"events", v2_events});
+            entries.push_back({"event_counts", v2_event_counts});
+            entries.push_back({"prev_hp", v2_prev_hp});
+            entries.push_back({"prev_max_hp", v2_prev_max_hp});
+            entries.push_back({"prev_score_t0", v2_prev_score_t0});
+            entries.push_back({"prev_score_t1", v2_prev_score_t1});
+            entries.push_back({"game_time", v2_game_time});
+            entries.push_back({"unit_alive", v2_unit_alive});
+            entries.push_back({"unit_level", v2_unit_level});
+            entries.push_back({"unit_x", v2_unit_x});
+            entries.push_back({"unit_y", v2_unit_y});
+            entries.push_back({"skill_points", v2_skill_points});
+            entries.push_back({"model_version", v2_model_version});
         }
 
         // Write to .tmp first, then atomic rename
