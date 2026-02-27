@@ -1,0 +1,28 @@
+# FateAnotherRL Reward Configuration
+# 이 파일을 수정하면 학습 시 reward가 relabel됩니다.
+# training.reward_config 경로를 이 파일로 설정하세요.
+#
+# Event types (protocol.h):
+#   EVT_KILL(1), EVT_CREEP_KILL(2), EVT_LEVEL_UP(3), EVT_PORTAL(4)
+
+# === 이벤트 기반 리워드 ===
+kill_hero: 1.0       # EVT_KILL: 영웅 처치
+kill_creep: 0.1      # EVT_CREEP_KILL: 크립 처치
+level_up: 0.2        # EVT_LEVEL_UP: 레벨업
+portal_use: 0.05     # EVT_PORTAL: 포탈/건물 진입
+
+# === HP/데미지 관련 (틱당 정규화) ===
+damage_dealt: 0.001   # 데미지 딜링 (적에게)
+damage_taken: -0.0005 # 데미지 받음
+healing: 0.0005       # 힐링
+
+# === 스코어 기반 ===
+score_diff: 0.01      # 팀 스코어 차이
+
+# === 게임 종료 ===
+win: 10.0             # 승리
+lose: -10.0           # 패배
+
+# === 리워드 쉐이핑 (실험적) ===
+hp_shaping: 0.0       # HP 기반 포텐셜 쉐이핑
+position_shaping: 0.0 # 위치 기반 쉐이핑

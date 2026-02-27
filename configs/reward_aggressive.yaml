@@ -1,0 +1,24 @@
+# FateAnotherRL Reward Configuration - AGGRESSIVE
+# 킬 중심 공격적 플레이 유도
+
+# === 이벤트 기반 리워드 (킬 보상 증가) ===
+kill_hero: 2.0       # 영웅 처치 (기본의 2배)
+kill_creep: 0.05     # 크립 처치 (감소 - 영웅 킬에 집중)
+level_up: 0.1        # 레벨업 (감소)
+portal_use: 0.02     # 포탈 (감소)
+
+# === HP/데미지 관련 (딜링 보상 증가) ===
+damage_dealt: 0.003   # 데미지 딜링 (3배)
+damage_taken: -0.0002 # 데미지 받음 (패널티 감소 - 리스크 허용)
+healing: 0.0002       # 힐링 (감소)
+
+# === 스코어 기반 ===
+score_diff: 0.02      # 스코어 차이 (증가)
+
+# === 게임 종료 ===
+win: 10.0
+lose: -10.0
+
+# === 쉐이핑 ===
+hp_shaping: 0.0
+position_shaping: 0.0
